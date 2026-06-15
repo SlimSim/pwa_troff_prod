@@ -202,7 +202,7 @@ class IOClass {
 
     $('#themePickerParent').find('input').click(Troff.setTheme);
 
-    $('#buttPlayUiButtonParent').on('butt-clicked', Troff.playUiButton);
+    $('#buttPlayUiButtonParent').on('click', Troff.playUiButton);
 
     $('#timeBar')[0].addEventListener('input', Troff.timeUpdate);
     $('#volumeBar')[0].addEventListener('input', Troff.volumeUpdate);
@@ -537,6 +537,7 @@ class IOClass {
       return;
     }
 
+    console.log('Keydown:', event.key);
     switch (event.keyCode) {
       case 32: //space bar
         Troff.space();
