@@ -361,6 +361,8 @@ export class GroupDialog extends LitElement {
               ? html`
                   <t-butt
                     class="btn-danger"
+                    confirm
+                    confirmText="Delete group?"
                     @click=${this._delete}
                     title="Delete group"
                   >
