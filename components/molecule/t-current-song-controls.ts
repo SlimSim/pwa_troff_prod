@@ -28,7 +28,8 @@ type SongAction =
   | 'copyMarkers'
   | 'moveMarkers'
   | 'deleteMarkers'
-  | 'stretchMarkers';
+  | 'stretchMarkers'
+  | 'shareSong';
 
 type SongNumericSetting = 'startBefore' | 'stopAfter' | 'incrementUntill';
 
@@ -49,9 +50,8 @@ export class CurrentSongControls extends LitElement {
     }
 
     .settings-group {
-      padding: 14px;
-
-      background-color: var(--item-background, rgba(255, 255, 255, 0.1));
+      overflow: hidden;
+      padding: 4px;
     }
 
     .settings-group-header {
@@ -60,6 +60,14 @@ export class CurrentSongControls extends LitElement {
       justify-content: space-between;
       gap: 12px;
       margin-bottom: 4px;
+    }
+
+    .share-song-button {
+      width: var(--settings-column-width);
+    }
+
+    .share-song-button t-icon {
+      padding-right: 8px;
     }
 
     .settings-group-title-block {
@@ -92,6 +100,7 @@ export class CurrentSongControls extends LitElement {
 
     .settings-section {
       margin-bottom: 6px;
+      width: var(--settings-column-width);
     }
 
     .settings-section h3 {
@@ -128,20 +137,10 @@ export class CurrentSongControls extends LitElement {
     }
 
     .loop-buttons {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      width: 100%;
-      container-type: inline-size;
-    }
-
-    .loop-buttons t-butt {
-      width: 100%;
-    }
-
-    @container (min-width: 450px) {
-      .loop-buttons {
-        grid-template-columns: repeat(10, minmax(0, 1fr));
-      }
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: space-between;
     }
 
     .setting-group-title {
@@ -212,17 +211,26 @@ export class CurrentSongControls extends LitElement {
       .playback-control-section {
         display: block;
       }
+
+      .settings-group {
+        padding: 14px;
+      }
+    }
+
+    .tap-tempo-butt {
+      display: flex;
+      align-items: center;
+      gap: 4px;
     }
 
     details.advanced-panel {
-      border: 1px solid var(--border-color, #333);
-      border-radius: 8px;
-      background-color: var(--item-background, rgba(255, 255, 255, 0.06));
       overflow: hidden;
+      width: var(--settings-column-width);
+      padding: 4px;
     }
 
     details.advanced-panel[open] {
-      background-color: var(--item-background, rgba(255, 255, 255, 0.1));
+      background-color: var(--secondary-color, rgba(0, 0, 0, 0.08));
     }
 
     .advanced-summary {
@@ -232,7 +240,8 @@ export class CurrentSongControls extends LitElement {
       justify-content: space-between;
       gap: 12px;
       cursor: pointer;
-      padding: 12px 14px;
+      padding: 12px 0;
+      padding-right: 1px;
     }
 
     .advanced-summary::-webkit-details-marker {
@@ -265,11 +274,11 @@ export class CurrentSongControls extends LitElement {
     }
 
     details.advanced-panel[open] .advanced-chevron {
-      transform: rotateX(180deg) translateY(-1px);
+      transform: rotateX(180deg) translateY(0);
     }
 
     .advanced-content {
-      padding: 0 14px 14px;
+      // padding: 0 14px 14px;
     }
 
     /* Responsive design for wider screens within the sidebar */
@@ -488,7 +497,17 @@ export class CurrentSongControls extends LitElement {
         <section class="settings-group">
           <div class="settings-group-header">
             <div class="settings-group-title-block">
-              <t-help-tip h3="Marker">
+              <t-butt
+                class="share-song-button"
+                special
+                fullWidth
+                title="Share this song to friends via link"
+                @click=${() => this._handleSongAction('shareSong')}
+              >
+                <t-icon name="share"></t-icon>
+                Share the song with a link!
+              </t-butt>
+              <t-help-tip h3="Marker" position="up">
                 These options control how the song is played back.
                 <ul>
                   <li>Play full song will select the first and last markers.</li>
@@ -508,17 +527,18 @@ export class CurrentSongControls extends LitElement {
               <div class="setting-item">
                 <div class="song-action-buttons">
                   <t-butt
-                    key="t"
+                    key="u"
                     ellipsis
                     .active=${this.playFullSong}
                     @click=${() => this._toggleSetting('playFullSong', this.playFullSong)}
                   >
                     Play full song
                   </t-butt>
-                  <t-butt ellipsis @click=${this._handleTapTempo}>
-                    <t-icon name="tap" slim></t-icon>
-                    ${this.tempo || '--'} <br />
-                    Tap tempo:
+                  <t-butt key="t" ellipsis @click=${this._handleTapTempo}>
+                    <div class="tap-tempo-butt">
+                      <t-icon name="metronome"></t-icon>
+                      <span>Tap tempo: ${this.tempo || '--'} <br /> </span>
+                    </div>
                   </t-butt>
                 </div>
               </div>
@@ -595,7 +615,7 @@ export class CurrentSongControls extends LitElement {
 
           <!-- 6. Loop headline -->
           <div class="settings-section">
-            <t-help-tip h3="Loop">
+            <t-help-tip h3="Loop" position="up">
               <ul>
                 <li class="loop-help-item-footer-only">
                   "Pause before" sets how long the player will wait before starting to play the song

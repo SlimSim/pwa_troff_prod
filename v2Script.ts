@@ -8,8 +8,12 @@ import './components/molecule/t-media-parent.js';
 import './components/molecule/t-main-layout.js';
 import './components/molecule/t-current-song-controls.js';
 import './components/molecule/t-group-dialog.js';
+import './components/molecule/t-song-edit-dialog.js';
+import type { SongEditDialog } from './components/molecule/t-song-edit-dialog.js';
+import type { ShareSongDialog } from './components/molecule/t-share-song-dialog.js';
 import './components/molecule/t-import-export-dialog.js';
 import './components/molecule/t-marker-tools-dialog.js';
+import './components/molecule/t-share-song-dialog.js';
 import './components/organisms/t-marker-slider.js';
 import './components/organisms/t-video-player.js';
 import {
@@ -45,6 +49,7 @@ import type {
   State,
   State_WithTime,
   TroffManualImportExport,
+  TroffFileData,
 } from './types/troff.d.js';
 import {
   TROFF_SETTING_ENTER_RESET_COUNTER,
@@ -73,6 +78,7 @@ import {
   TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
 } from './constants/constants.js';
 import log from './utils/log.js';
+import { showToast } from './utils/notification.js';
 import { syncFirebaseGroups } from './utils/firebase-sync.js';
 import { toSongKey } from './utils/utils.js';
 import {
@@ -276,6 +282,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let isLoopTransitionPause = false;
   let configuredLoopTimes = 1;
   let loopTimesLeft = 1;
+
+  // Current auth state, kept in sync by the onAuthStateChanged callback below
+  let currentUserSignedIn = false;
+  let currentUserEmail = '';
 
   // Load a song from the cache and route it to the audio element or the video
   // element depending on whether the cached file is a video.
@@ -644,6 +654,69 @@ document.addEventListener('DOMContentLoaded', () => {
     );
   };
 
+  const openShareSongDialog = () => {
+    const songKey = getCurrentSongKey();
+    if (!songKey) {
+      showToast(
+        'You do not have a song to upload yet. Add a song to Troff and then try again!',
+        'error'
+      );
+      return;
+    }
+    if (!navigator.onLine) {
+      showToast(
+        'You appear to be offline, please wait until you have an internet connection and try again then.',
+        'error'
+      );
+      return;
+    }
+
+    let shareDialog = document.querySelector('t-share-song-dialog') as ShareSongDialog | null;
+    if (!shareDialog) {
+      shareDialog = document.createElement('t-share-song-dialog');
+      document.body.append(shareDialog);
+    }
+    shareDialog.songName = songKey;
+
+    if (window.location.hash) {
+      shareDialog.alreadyUploaded = true;
+      shareDialog.shareUrl = window.location.href;
+      shareDialog.state = 'done';
+      shareDialog.open = true;
+      return;
+    }
+
+    shareDialog.alreadyUploaded = false;
+    shareDialog.state = 'confirm';
+    shareDialog.open = true;
+
+    const handleShareConfirmed = async () => {
+      shareDialog.removeEventListener('dialog-cancelled', handleShareDialogCancelled);
+      shareDialog.state = 'uploading';
+      shareDialog.progress = 0;
+      const { uploadSongToServer, buildShareUrl } = await import('./utils/upload-song.js');
+      const result = await uploadSongToServer(songKey, (percent) => {
+        shareDialog.progress = percent;
+      });
+      if (!result) {
+        shareDialog.removeEventListener('share-confirmed', handleShareConfirmed);
+        shareDialog.open = false;
+        showToast('Upload failed. Please try again.', 'error');
+        return;
+      }
+      setUrlToSong(result.id, result.fileName); // existing local function in v2Script
+      shareDialog.shareUrl = buildShareUrl(result.id, result.fileName);
+      shareDialog.state = 'done';
+    };
+
+    const handleShareDialogCancelled = () => {
+      shareDialog.removeEventListener('share-confirmed', handleShareConfirmed);
+    };
+
+    shareDialog.addEventListener('share-confirmed', handleShareConfirmed, { once: true });
+    shareDialog.addEventListener('dialog-cancelled', handleShareDialogCancelled, { once: true });
+  };
+
   const openMarkerToolsDialog = (action: string) => {
     const songKey = getCurrentSongKey();
     if (!songKey) {
@@ -930,6 +1003,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const songKey = getCurrentSongKey();
     const songData = songKey ? nDB.get(songKey) : null;
+    settingsPanel.songStates = songKey && songData && Array.isArray(songData.aStates) ? songData.aStates : [];
     const rawLoopTimes =
       songData?.loopTimes !== undefined ? songData.loopTimes : getDefaultLoopTimesValue();
     const configuredLoops = parseConfiguredLoopTimes(rawLoopTimes);
@@ -1119,7 +1193,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Also sync the settings panel's instance (visible on mobile when sidebar is hidden)
-    const settingsControls = document.querySelector('#settingsCurrentSongControls') as any;
+    const settingsControls =
+      (settingsPanel?.shadowRoot?.querySelector('#settingsCurrentSongControls') as any) ?? null;
     if (settingsControls) {
       settingsControls.loopTimesValue = currentSongControls.loopTimesValue;
       settingsControls.startBeforeDisabled = currentSongControls.startBeforeDisabled;
@@ -1135,6 +1210,12 @@ document.addEventListener('DOMContentLoaded', () => {
       settingsControls.tempo = currentSongControls.tempo;
       settingsControls.disablePauseBefore = currentSongControls.disablePauseBefore;
       settingsControls.disableWaitBetween = currentSongControls.disableWaitBetween;
+    }
+
+    // Also push tempo onto the settings panel host so the template binding
+    // carries it to the internal instance even when that instance renders later.
+    if (settingsPanel) {
+      settingsPanel.tempo = currentSongControls.tempo;
     }
   };
 
@@ -1386,6 +1467,131 @@ document.addEventListener('DOMContentLoaded', () => {
   // Set heights after components are rendered
   setTimeout(setComponentHeights, 200);
 
+  const rememberCurrentState = () => {
+    const songKey = getCurrentSongKey();
+    if (!songKey) {
+      return;
+    }
+    const songData = nDB.get(songKey) || {};
+    const existingStates: string[] = Array.isArray(songData.aStates) ? songData.aStates : [];
+    const suggested = 'State ' + (existingStates.length + 1);
+    const name = window.prompt('Remember state of settings to be recalled later', suggested);
+    if (!name || name.trim() === '') {
+      return;
+    }
+    const parseNum = (v: unknown, fb: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fb;
+    };
+    const state: State = {
+      name: name.trim(),
+      currentMarker: markerSlider ? markerSlider.startMarkerId : (songData.currentStartMarker || ''),
+      currentStopMarker: markerSlider ? markerSlider.stopMarkerId : (songData.currentStopMarker || ''),
+      currentLoop: songData.loopTimes !== undefined ? songData.loopTimes : '1',
+      buttPauseBefStart: songData.TROFF_CLASS_TO_TOGGLE_buttPauseBefStart !== false,
+      buttStartBefore: songData.TROFF_CLASS_TO_TOGGLE_buttStartBefore !== false,
+      buttStopAfter: songData.TROFF_CLASS_TO_TOGGLE_buttStopAfter !== false,
+      buttWaitBetweenLoops: songData.TROFF_CLASS_TO_TOGGLE_buttWaitBetweenLoops !== false,
+      buttIncrementUntil: songData.TROFF_CLASS_TO_TOGGLE_buttIncrementUntil === true,
+      pauseBeforeStart: parseNum(songData.TROFF_VALUE_pauseBeforeStart, parseNum(footer?.pauseBefore, 3)),
+      speedBar: parseNum(songData.TROFF_VALUE_speedBar, parseNum(footer?.speed, 100)),
+      startBefore: parseNum(songData.TROFF_VALUE_startBefore, 0),
+      stopAfter: parseNum(songData.TROFF_VALUE_stopAfter, 0),
+      volumeBar: parseNum(songData.TROFF_VALUE_volumeBar, parseNum(footer?.volume, 75)),
+      waitBetweenLoops: parseNum(songData.TROFF_VALUE_waitBetweenLoops, parseNum(footer?.waitBetween, 1)),
+    };
+    const aStates: string[] = existingStates.slice();
+    aStates.push(JSON.stringify(state));
+    nDB.setOnSong(songKey, 'aStates', aStates);
+    void saveSongData(songKey);
+    syncSettingsPanelValues();
+    syncCurrentSongControlsValues();
+    if (markerSlider) {
+      updateMarkerSlider(markerSlider);
+    }
+  };
+
+  const setState = (index: number) => {
+    const songKey = getCurrentSongKey();
+    if (!songKey) {
+      return;
+    }
+    const songData: Record<string, unknown> = nDB.get(songKey) || {};
+    const aStates: string[] = Array.isArray(songData.aStates) ? (songData.aStates as string[]).slice() : [];
+    if (index < 0 || index >= aStates.length) {
+      return;
+    }
+    let state: State;
+    try {
+      state = JSON.parse(aStates[index]) as State;
+    } catch {
+      return;
+    }
+    songData.currentStartMarker = state.currentMarker || (songData.currentStartMarker as string) || '';
+    songData.currentStopMarker = state.currentStopMarker || (songData.currentStopMarker as string) || '';
+    if (state.currentLoop !== undefined) {
+      songData.loopTimes = state.currentLoop;
+    }
+    songData.TROFF_CLASS_TO_TOGGLE_buttPauseBefStart = !!state.buttPauseBefStart;
+    songData.TROFF_CLASS_TO_TOGGLE_buttStartBefore = !!state.buttStartBefore;
+    songData.TROFF_CLASS_TO_TOGGLE_buttStopAfter = !!state.buttStopAfter;
+    songData.TROFF_CLASS_TO_TOGGLE_buttWaitBetweenLoops = !!state.buttWaitBetweenLoops;
+    songData.TROFF_CLASS_TO_TOGGLE_buttIncrementUntil = !!state.buttIncrementUntil;
+    songData.TROFF_VALUE_pauseBeforeStart = state.pauseBeforeStart;
+    songData.TROFF_VALUE_speedBar = state.speedBar;
+    songData.TROFF_VALUE_startBefore = state.startBefore;
+    songData.TROFF_VALUE_stopAfter = state.stopAfter;
+    songData.TROFF_VALUE_volumeBar = state.volumeBar;
+    songData.TROFF_VALUE_waitBetweenLoops = state.waitBetweenLoops;
+    nDB.set(songKey, songData);
+    const vol = Number(state.volumeBar);
+    if (Number.isFinite(vol)) {
+      audio.volume = Math.max(0, Math.min(1, vol / 100));
+      if (videoElement) {
+        videoElement.volume = audio.volume;
+      }
+    }
+    const spd = Number(state.speedBar);
+    if (Number.isFinite(spd) && spd > 0) {
+      audio.playbackRate = spd / 100;
+      if (videoElement) {
+        videoElement.playbackRate = audio.playbackRate;
+      }
+      if (videoPlayer) {
+        (videoPlayer as { speed?: number }).speed = spd;
+      }
+    }
+    void saveSongData(songKey);
+    syncLoopTimesFromSong();
+    syncSettingsPanelValues();
+    syncCurrentSongControlsValues();
+    updateFooterWithCurrentSong();
+    updateHeaderCountdownDisplay();
+    if (markerSlider) {
+      updateMarkerSlider(markerSlider, false);
+    }
+  };
+
+  const removeState = (index: number) => {
+    const songKey = getCurrentSongKey();
+    if (!songKey) {
+      return;
+    }
+    const songData = nDB.get(songKey) || {};
+    const aStates: string[] = Array.isArray(songData.aStates) ? (songData.aStates as string[]).slice() : [];
+    if (index < 0 || index >= aStates.length) {
+      return;
+    }
+    aStates.splice(index, 1);
+    nDB.setOnSong(songKey, 'aStates', aStates);
+    void saveSongData(songKey);
+    syncSettingsPanelValues();
+    syncCurrentSongControlsValues();
+    if (markerSlider) {
+      updateMarkerSlider(markerSlider);
+    }
+  };
+
   if (footer && settingsPanel) {
     // Listen for settings toggle events from footer
     footer.addEventListener('settings-toggle', (event: any) => {
@@ -1621,8 +1827,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     settingsPanel.addEventListener('song-action-requested', async (event: Event) => {
-      const customEvent = event as CustomEvent<{ action?: string }>;
+      const customEvent = event as CustomEvent<{ action?: string; index?: number }>;
       const action = String(customEvent.detail?.action ?? '');
+      const stateIndex = customEvent.detail?.index;
+
+      if (action === 'rememberState') {
+        rememberCurrentState();
+        return;
+      }
+
+      if (action === 'setState' && typeof stateIndex === 'number') {
+        setState(stateIndex);
+        return;
+      }
+
+      if (action === 'removeState' && typeof stateIndex === 'number') {
+        removeState(stateIndex);
+        return;
+      }
 
       if (action === 'zoom') {
         await zoomToPlayableRegion();
@@ -1635,6 +1857,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (action === 'importExport') {
         await handleImportExport();
+      }
+
+      if (action === 'shareSong') {
+        openShareSongDialog();
+        return;
       }
 
       if (
@@ -1664,8 +1891,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    // Handle sign-in / sign-out requests from the settings panel
-    settingsPanel.addEventListener('sign-in-requested', async (event: Event) => {
+    // Handle sign-in / sign-out requests from the settings panel and the song list
+    const handleSignInRequest = async (event: Event) => {
       const customEvent = event as CustomEvent<{ action: string }>;
       const action = customEvent.detail?.action;
 
@@ -1685,7 +1912,10 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (error) {
         log.e('Auth error:', error);
       }
-    });
+    };
+
+    settingsPanel.addEventListener('sign-in-requested', handleSignInRequest);
+    songList?.addEventListener('sign-in-requested', handleSignInRequest);
   }
 
   // Keep the settings panel auth state in sync with Firebase on every page load
@@ -1695,9 +1925,15 @@ document.addEventListener('DOMContentLoaded', () => {
       await import('./assets/internal/notify-js/notify.config.js');
       const { auth, onAuthStateChanged } = await import('./services/firebaseClient.js');
       onAuthStateChanged(auth, async (user) => {
+        currentUserSignedIn = user !== null;
+        currentUserEmail = user?.email ?? '';
         if (settingsPanel) {
           settingsPanel.signedIn = user !== null;
           settingsPanel.userName = user?.displayName ?? '';
+        }
+        if (groupDialog) {
+          groupDialog.signedIn = user !== null;
+          groupDialog.userEmail = user?.email ?? '';
         }
 
         if (!user) {
@@ -2488,6 +2724,8 @@ document.addEventListener('DOMContentLoaded', () => {
       groupDialog = document.createElement('t-group-dialog') as any;
       document.body.append(groupDialog);
     }
+    groupDialog.signedIn = currentUserSignedIn;
+    groupDialog.userEmail = currentUserEmail;
     return groupDialog;
   };
 
@@ -2600,6 +2838,78 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       log.e('Error deleting group:', error);
     }
+  });
+
+  // -------- Song edit dialog (V2) --------
+  let songEditDialog: SongEditDialog | null = null;
+
+  const ensureSongEditDialog = () => {
+    if (!songEditDialog) {
+      songEditDialog = document.createElement('t-song-edit-dialog');
+      document.body.append(songEditDialog);
+    }
+    return songEditDialog;
+  };
+
+  if (songList) {
+    if (typeof songList.addEventListener === 'function') {
+      songList.addEventListener('song-edit-requested', (event: Event) => {
+        const customEvent = event as CustomEvent<{ songKey?: string }>;
+        const songKey = customEvent.detail?.songKey;
+        if (!songKey) return;
+        const dlg = ensureSongEditDialog();
+        dlg.songKey = songKey;
+        dlg.songData = nDB.get(songKey);
+        dlg.open = true;
+      });
+    }
+  }
+
+  // Listen for song-saved events from the dialog
+  document.addEventListener('song-saved', async (event: Event) => {
+    const customEvent = event as CustomEvent<{ songKey?: string; fileData?: Partial<TroffFileData> }>;
+    const { songKey, fileData } = customEvent.detail ?? {};
+    if (!songKey || !fileData) return;
+
+    const songObject = nDB.get(songKey);
+    if (!songObject) return;
+
+    songObject.fileData = songObject.fileData || {};
+    songObject.fileData.customName = fileData.customName ?? '';
+    songObject.fileData.choreography = fileData.choreography ?? '';
+    songObject.fileData.choreographer = fileData.choreographer ?? '';
+    songObject.fileData.title = fileData.title ?? '';
+    songObject.fileData.artist = fileData.artist ?? '';
+    songObject.fileData.album = fileData.album ?? '';
+    songObject.fileData.genre = fileData.genre ?? '';
+    songObject.fileData.tags = fileData.tags ?? '';
+
+    nDB.set(songKey, songObject);
+
+    // Reload the song list to reflect the new metadata
+    if (songList && typeof songList.reloadSongs === 'function') {
+      await songList.reloadSongs();
+    }
+
+    // Refresh header/footer if this is the currently playing song
+    if (getCurrentSongKey() === songKey) {
+      updateHeaderWithCurrentSong();
+      updateFooterWithCurrentSong();
+    }
+
+    // Sync edited metadata to Firebase groups (v2 equivalent of ifGroupSongUpdateFirestore)
+    void saveSongData(songKey);
+  });
+
+  // Listen for song info saves from the header dropdown
+  document.addEventListener('song-info-saved', (event: Event) => {
+    const customEvent = event as CustomEvent<{ info?: string }>;
+    const { info } = customEvent.detail ?? {};
+    if (info === undefined) return;
+    const songKey = getCurrentSongKey();
+    if (!songKey) return;
+    nDB.setOnSong(songKey, 'info', info);
+    void saveSongData(songKey);
   });
 
   // -------- Group song management (add/remove from detail view) --------
