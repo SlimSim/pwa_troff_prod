@@ -53,10 +53,7 @@ Transform tasks into verifiable goals:
 
 "Add validation" → "Write tests for invalid inputs, then make them pass"
 "Fix the bug" → "Write a test that reproduces it, then make it pass"
-"Implement feature" → "Write a test that verifies the new behavior, then make it pass"
 "Refactor X" → "Ensure tests pass before and after"
-
-**CRITICAL**: Every change must start with a failing test. No exceptions for "simple" UI tweaks, markup changes, or adding HTML attributes.
 For multi-step tasks, state a brief plan:
 
 1. [Step] → verify: [check]
