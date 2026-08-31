@@ -6,14 +6,10 @@ body {
   color: var(--on-secondary-color);
 }
 
-/* Cookie consent notification — v2 theme
-   Matches the dialog style used by v2 components (t-group-dialog, etc.):
-   light background, theme-colored text, subtle shadow, clean look. */
+/* ===================================================================
+   Cookie consent notification — v2 theme
+   =================================================================== */
 .notifyjs-corner .notifyjs-html-info-base {
-  background: var(--on-theme-color, #eee);
-  color: var(--theme-color, #003366);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-
   background: var(--primary-color) !important;
   color: var(--on-primary-color) !important;
   border-color: var(--primary-color) !important;

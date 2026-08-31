@@ -29,6 +29,7 @@ export class Dial extends LitElement {
       height: 120px;
       border-radius: 50%;
       background-color: var(--theme-color);
+      border: 3px solid var(--on-body-background);
       cursor: grab;
       position: relative;
       transition: box-shadow 0.2s ease;
@@ -187,7 +188,7 @@ export class Dial extends LitElement {
   private _clamp(value: number) {
     if (this.min !== undefined && this.min !== null && !Number.isNaN(this.min))
       value = Math.max(this.min, value);
-    if (this.max !== undefined && this.max !== null && !Number.isNaN(this.max))
+    if (this.max !== undefined && this.max !== null && !Number.isNaN(this.max) && this.max > 0)
       value = Math.min(this.max, value);
     return value;
   }
@@ -298,6 +299,7 @@ export class Dial extends LitElement {
             height: 120px;
             border-radius: 50%;
             background-color: var(--theme-color);
+            border: 3px solid var(--on-body-background);
             cursor: grab;
             display: flex;
             align-items: center;
@@ -431,7 +433,7 @@ export class Dial extends LitElement {
     const totalValueChange = fullValueChange + partialValueChange;
 
     const effectiveMin = this.min ?? 0;
-    const effectiveMax = this.max ?? Infinity;
+    const effectiveMax = this.max && this.max > 0 ? this.max : Infinity;
     let newValue = this.initialValue + direction * this._roundToStep(totalValueChange);
 
     // Clamp during drag calculation (like t-time-input does for min)
@@ -557,7 +559,7 @@ export class Dial extends LitElement {
   }
 
   private _handleIncrement() {
-    const effectiveMax = this.max ?? Infinity;
+    const effectiveMax = this.max && this.max > 0 ? this.max : Infinity;
     this._value = Math.min(effectiveMax, this._roundToStep(this._value + this.step));
     this._dispatchValueChanged();
   }

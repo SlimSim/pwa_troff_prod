@@ -21,7 +21,8 @@ type ToggleSetting =
   | 'playGoToMarker'
   | 'extendedMarkerColor'
   | 'extraExtendedMarkerColor'
-  | 'keepScreenOn';
+  | 'keepScreenOn'
+  | 'darkMode';
 
 type SongNumericSetting = 'startBefore' | 'stopAfter' | 'incrementUntill';
 
@@ -164,6 +165,27 @@ export class SettingsPanel extends LitElement {
       font-size: 0.85rem;
       color: var(--text-color, #000);
       opacity: 0.8;
+    }
+
+    .theme-selector {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .theme-selector t-butt {
+      flex-grow: 1;
+      min-width: 0;
+    }
+
+    .theme-swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 3px;
+      vertical-align: middle;
+      border: 1px solid rgba(0, 0, 0, 0.2);
     }
     .scope-badge-container {
       padding-top: 16px;
@@ -368,6 +390,8 @@ export class SettingsPanel extends LitElement {
   @property({ type: Boolean }) extendedMarkerColor = false;
   @property({ type: Boolean }) extraExtendedMarkerColor = false;
   @property({ type: Boolean }) keepScreenOn = true;
+  @property({ type: Boolean }) darkMode = false;
+  @property({ type: String }) theme = 'col1';
 
   connectedCallback() {
     super.connectedCallback();
@@ -528,6 +552,9 @@ export class SettingsPanel extends LitElement {
       case 'keepScreenOn':
         this.keepScreenOn = nextValue;
         break;
+      case 'darkMode':
+        this.darkMode = nextValue;
+        break;
       default:
         return;
     }
@@ -547,6 +574,11 @@ export class SettingsPanel extends LitElement {
     }
 
     return current === loopTimes;
+  }
+
+  private _setTheme(theme: string) {
+    this.theme = theme;
+    this._handleSettingChange('theme', theme);
   }
 
   private _handleCurrentSongSettingChange(event: CustomEvent) {
@@ -619,10 +651,113 @@ export class SettingsPanel extends LitElement {
             </div>
 
             <t-details
+              title="Theme"
+              class="settings-width"
+              text="Choose a color theme and toggle dark mode."
+            >
+              <div class="settings-section">
+                <div class="theme-selector">
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col1'}
+                    title="Blue and purple"
+                    @click=${() => this._setTheme('col1')}
+                    ><span class="theme-swatch" style="background:#003366"></span>standard</t-butt
+                  >
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col2'}
+                    title="Green and red"
+                    @click=${() => this._setTheme('col2')}
+                    ><span class="theme-swatch" style="background:#2e7d32"></span>forest</t-butt
+                  >
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col3'}
+                    title="Black and yellow"
+                    @click=${() => this._setTheme('col3')}
+                    ><span class="theme-swatch" style="background:#333"></span>sunset</t-butt
+                  >
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col4'}
+                    title="Gold and white"
+                    @click=${() => this._setTheme('col4')}
+                    ><span class="theme-swatch" style="background:#8b7832"></span>winning</t-butt
+                  >
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col5'}
+                    title="Black and red"
+                    @click=${() => this._setTheme('col5')}
+                    ><span class="theme-swatch" style="background:#8b0000"></span>bold</t-butt
+                  >
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.theme === 'col6'}
+                    title="Teal and orange"
+                    @click=${() => this._setTheme('col6')}
+                    ><span class="theme-swatch" style="background:#00796b"></span>ocean</t-butt
+                  >
+                </div>
+              </div>
+              <div class="settings-section" style="margin: 0; margin-top: 8px;">
+                <t-butt
+                  toggle
+                  ellipsis
+                  .active=${this.darkMode}
+                  @click=${() => this._toggleSetting('darkMode', this.darkMode)}
+                >
+                  Dark mode
+                </t-butt>
+              </div>
+            </t-details>
+
+            <t-details
               title="Behaviour of keys and buttons"
               class="settings-width"
               text="Configure what happens when you press the Enter key, Space key, or Play button."
             >
+              <div class="settings-section">
+                <h3>Play Button</h3>
+                <div class="settings-grid">
+                  <div class="setting-item">
+                    <div class="action-buttons">
+                      <t-butt
+                        toggle
+                        ellipsis
+                        .active=${this.playGoToMarker}
+                        @click=${() => this._toggleSetting('playGoToMarker', this.playGoToMarker)}
+                      >
+                        Go to marker
+                      </t-butt>
+                      <t-butt
+                        toggle
+                        ellipsis
+                        .active=${this.playUseTimer}
+                        @click=${() => this._toggleSetting('playUseTimer', this.playUseTimer)}
+                      >
+                        Use timer
+                      </t-butt>
+                      <t-butt
+                        toggle
+                        ellipsis
+                        .active=${this.playResetCounter}
+                        @click=${() =>
+                          this._toggleSetting('playResetCounter', this.playResetCounter)}
+                      >
+                        Reset counter
+                      </t-butt>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div class="settings-section">
                 <h3>Enter Key</h3>
                 <div class="settings-grid">
@@ -685,41 +820,6 @@ export class SettingsPanel extends LitElement {
                         .active=${this.spaceResetCounter}
                         @click=${() =>
                           this._toggleSetting('spaceResetCounter', this.spaceResetCounter)}
-                      >
-                        Reset counter
-                      </t-butt>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="settings-section">
-                <h3>Play Button</h3>
-                <div class="settings-grid">
-                  <div class="setting-item">
-                    <div class="action-buttons">
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playGoToMarker}
-                        @click=${() => this._toggleSetting('playGoToMarker', this.playGoToMarker)}
-                      >
-                        Go to marker
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playUseTimer}
-                        @click=${() => this._toggleSetting('playUseTimer', this.playUseTimer)}
-                      >
-                        Use timer
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playResetCounter}
-                        @click=${() =>
-                          this._toggleSetting('playResetCounter', this.playResetCounter)}
                       >
                         Reset counter
                       </t-butt>

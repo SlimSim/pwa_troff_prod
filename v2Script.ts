@@ -53,6 +53,7 @@ import type {
   State_WithTime,
   TroffManualImportExport,
   TroffFileData,
+  TroffHistoryList,
 } from './types/troff.d.js';
 import {
   TROFF_SETTING_ENTER_RESET_COUNTER,
@@ -80,6 +81,9 @@ import {
   TROFF_SETTING_EXTENDED_MARKER_COLOR,
   TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
   TROFF_SETTING_KEEP_SCREEN_ON,
+  TROFF_SETTING_DARK_MODE,
+  TROFF_SETTING_THEME,
+  TROFF_TROFF_DATA_ID_AND_FILE_NAME,
 } from './constants/constants.js';
 import log from './utils/log.js';
 import { showToast } from './utils/notification.js';
@@ -391,6 +395,37 @@ document.addEventListener('DOMContentLoaded', () => {
   const withSafeNumber = (value: unknown, fallback: number) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  const getVersionInfo = (songKey: string): { numberOfVersions: number; findUrl: string } => {
+    const fileNameUri = encodeURI(songKey);
+    const dbHistory: TroffHistoryList[] | null = nDB.get(
+      TROFF_TROFF_DATA_ID_AND_FILE_NAME
+    );
+    if (dbHistory == null) {
+      return { numberOfVersions: 0, findUrl: '' };
+    }
+
+    const hist = dbHistory.filter((h) => h.fileNameUri === fileNameUri);
+    if (
+      hist.length === 0 ||
+      hist[0].troffDataIdObjectList == null ||
+      hist[0].troffDataIdObjectList.length === 0
+    ) {
+      return { numberOfVersions: 0, findUrl: '' };
+    }
+
+    if (
+      hist[0].troffDataIdObjectList.length === 1 &&
+      nDB.get(songKey)?.serverId !== undefined
+    ) {
+      return { numberOfVersions: 0, findUrl: '' };
+    }
+
+    return {
+      numberOfVersions: hist[0].troffDataIdObjectList.length,
+      findUrl: 'find.html#f=my&id=' + fileNameUri,
+    };
   };
 
   const getTimelineDuration = () => {
@@ -1130,6 +1165,8 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsPanel.playGoToMarker =
       nDB.get(TROFF_SETTING_PLAY_UI_BUTTON_GO_TO_MARKER_BEHAVIOUR) ?? true;
     settingsPanel.keepScreenOn = nDB.get(TROFF_SETTING_KEEP_SCREEN_ON) ?? true;
+    settingsPanel.darkMode = nDB.get(TROFF_SETTING_DARK_MODE) ?? false;
+    settingsPanel.theme = nDB.get(TROFF_SETTING_THEME) ?? 'col1';
     const extendedColorSetting = nDB.get(TROFF_SETTING_EXTENDED_MARKER_COLOR);
     const extraExtendedColorSetting = nDB.get(TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR);
     settingsPanel.extendedMarkerColor = extendedColorSetting === true;
@@ -1181,6 +1218,11 @@ document.addEventListener('DOMContentLoaded', () => {
     currentSongControls.loopTimesValue = Number.isFinite(configuredLoops)
       ? String(configuredLoops)
       : 'Inf';
+
+    // Version link info
+    const versionInfo = songKey ? getVersionInfo(songKey) : { numberOfVersions: 0, findUrl: '' };
+    currentSongControls.numberOfVersions = versionInfo.numberOfVersions;
+    currentSongControls.findUrl = versionInfo.findUrl;
 
     // Load song-specific numeric settings and their disabled states.
     // Disabled state must be set BEFORE value so the t-dial knows its disabled
@@ -1281,6 +1323,8 @@ document.addEventListener('DOMContentLoaded', () => {
       settingsControls.tempo = currentSongControls.tempo;
       settingsControls.disablePauseBefore = currentSongControls.disablePauseBefore;
       settingsControls.disableWaitBetween = currentSongControls.disableWaitBetween;
+      settingsControls.numberOfVersions = currentSongControls.numberOfVersions;
+      settingsControls.findUrl = currentSongControls.findUrl;
     }
 
     // Also push tempo onto the settings panel host so the template binding
@@ -1506,17 +1550,18 @@ document.addEventListener('DOMContentLoaded', () => {
       if (shouldResetLoopCounter(resetCounterSettingKey)) {
         resetLoopTimesCounter();
       }
+
+      // If "go to marker" is enabled, seek to the start marker time when pausing
+      if (goToMarkerSettingKey && nDB.get(goToMarkerSettingKey) === true) {
+        const startTime = markerSlider.getPlaybackStart();
+        if (Number.isFinite(startTime)) {
+          getActiveMedia().currentTime = startTime;
+        }
+      }
+
       getActiveMedia().pause();
       updateHeaderCountdownDisplay();
       return;
-    }
-
-    // If "go to marker" is enabled, seek to the start marker time before playing
-    if (goToMarkerSettingKey && nDB.get(goToMarkerSettingKey) === true) {
-      const startTime = markerSlider.getPlaybackStart();
-      if (Number.isFinite(startTime)) {
-        getActiveMedia().currentTime = startTime;
-      }
     }
 
     schedulePlaybackAfterDelay(getPauseBeforeDelay(timerSettingKey));
@@ -1943,6 +1988,8 @@ document.addEventListener('DOMContentLoaded', () => {
         extendedMarkerColor: TROFF_SETTING_EXTENDED_MARKER_COLOR,
         extraExtendedMarkerColor: TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
         keepScreenOn: TROFF_SETTING_KEEP_SCREEN_ON,
+        darkMode: TROFF_SETTING_DARK_MODE,
+        theme: TROFF_SETTING_THEME,
       };
 
       const storageKey = settingsKeyByPanelSetting[setting];
@@ -1950,9 +1997,19 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      nDB.set(storageKey, value === true);
+      nDB.set(storageKey, value === true ? true : value);
       if (setting === 'keepScreenOn') {
         void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+      }
+      if (setting === 'darkMode') {
+        if (value === true) {
+          document.body.setAttribute('data-mode', 'dark');
+        } else {
+          document.body.setAttribute('data-mode', 'light');
+        }
+      }
+      if (setting === 'theme') {
+        document.body.setAttribute('data-theme', String(value));
       }
       syncSettingsPanelValues();
       syncCurrentSongControlsValues();
@@ -2134,11 +2191,26 @@ document.addEventListener('DOMContentLoaded', () => {
       [TROFF_SETTING_SPACE_RESET_COUNTER, false],
       [TROFF_SETTING_SPACE_GO_TO_MARKER_BEHAVIOUR, false],
       [TROFF_SETTING_KEEP_SCREEN_ON, true],
+      [TROFF_SETTING_DARK_MODE, false],
     ];
     for (const [key, defaultValue] of defaultsIfUnset) {
       if (nDB.get(key) == null) {
         nDB.set(key, defaultValue);
       }
+    }
+    if (nDB.get(TROFF_SETTING_THEME) == null) {
+      nDB.set(TROFF_SETTING_THEME, 'col1');
+    }
+
+    // Apply theme on startup
+    const savedTheme = nDB.get(TROFF_SETTING_THEME) ?? 'col1';
+    document.body.setAttribute('data-theme', String(savedTheme));
+
+    // Apply dark mode on startup
+    if (nDB.get(TROFF_SETTING_DARK_MODE) === true) {
+      document.body.setAttribute('data-mode', 'dark');
+    } else {
+      document.body.setAttribute('data-mode', 'light');
     }
 
     updateFooterWithCurrentSong();
@@ -2620,7 +2692,11 @@ document.addEventListener('DOMContentLoaded', () => {
       updateHeaderCountdownDisplay();
     };
     const onEnded = () => {
-      clearPendingPlaybackStart();
+      if (isLoopTransitionPause) {
+        isLoopTransitionPause = false;
+      } else {
+        clearPendingPlaybackStart();
+      }
       if (footer) {
         footer.isPlaying = false;
       }
