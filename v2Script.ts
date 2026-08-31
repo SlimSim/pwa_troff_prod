@@ -379,6 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (videoPlayer) videoPlayer.hidden = true;
       if (videoElement) videoElement.pause();
     }
+    applyStoredVolumeAndSpeedToMedia();
   };
 
   // Responsive placement: video player sits at the top on narrow screens and
@@ -1165,6 +1166,7 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsPanel.playGoToMarker =
       nDB.get(TROFF_SETTING_PLAY_UI_BUTTON_GO_TO_MARKER_BEHAVIOUR) ?? true;
     settingsPanel.keepScreenOn = nDB.get(TROFF_SETTING_KEEP_SCREEN_ON) ?? true;
+    void updateWakeLockForPlayback(false, false);
     settingsPanel.darkMode = nDB.get(TROFF_SETTING_DARK_MODE) ?? false;
     settingsPanel.theme = nDB.get(TROFF_SETTING_THEME) ?? 'col1';
     const extendedColorSetting = nDB.get(TROFF_SETTING_EXTENDED_MARKER_COLOR);
@@ -1537,6 +1539,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resetCounterSettingKey: string,
     goToMarkerSettingKey?: string
   ) => {
+    void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
     if (pendingPlaybackStart !== undefined) {
       if (shouldResetLoopCounter(resetCounterSettingKey)) {
         resetLoopTimesCounter();
@@ -2533,7 +2536,6 @@ document.addEventListener('DOMContentLoaded', () => {
           syncLoopTimesFromSong();
           syncSettingsPanelValues();
           syncCurrentSongControlsValues();
-          applyStoredVolumeAndSpeedToMedia();
           updateHeaderCountdownDisplay();
 
           // Update marker slider with new song markers
@@ -2564,7 +2566,6 @@ document.addEventListener('DOMContentLoaded', () => {
       syncLoopTimesFromSong();
       syncSettingsPanelValues();
       syncCurrentSongControlsValues();
-      applyStoredVolumeAndSpeedToMedia();
       updateHeaderCountdownDisplay();
       void applySavedZoomWindowForCurrentSong();
     }
@@ -2770,7 +2771,6 @@ document.addEventListener('DOMContentLoaded', () => {
     syncLoopTimesFromSong();
     syncSettingsPanelValues();
     syncCurrentSongControlsValues();
-    applyStoredVolumeAndSpeedToMedia();
     updateHeaderCountdownDisplay();
 
     updateMarkerSlider(markerSlider);
