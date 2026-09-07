@@ -108,6 +108,11 @@ import {
 import { getManifest } from './utils/manifestHelper.js';
 import { updateWakeLockForPlayback } from './utils/phoneUtils.js';
 
+// Arrow key time increments (matching v1)
+export const ALT_TIME = 1 / 12;       // one frame at 12fps
+export const REGULAR_TIME = 10 / 12;  // 10 frames
+export const SHIFT_TIME = 100 / 12;   // 100 frames
+
 // Hostname→Sentry environment mapping — mirrors utils/firebase-getter.ts
 // (which itself mirrors the legacy assets/internal/environment.ts selection).
 function getSentryEnvironment(): 'dev' | 'test' | 'prod' {
@@ -310,8 +315,8 @@ const updateMarkerSlider = (markerSlider: MarkerSlider, setAudioTime: boolean = 
 /** Record a song start: increment nrTimesLoaded and save a timestamp for the month badge */
 function recordSongStart(songKey: string): void {
   const songData = nDB.get(songKey);
-  if (!songData) return;
-  const localInfo = songData.localInformation || {};
+  if (!songData?.localInformation) return;
+  const localInfo = songData.localInformation;
 
   // Increment total play count
   const nrTimesLoaded = localInfo.nrTimesLoaded || 0;
@@ -348,9 +353,178 @@ const setUrlToSong = (serverId: string | number | undefined, songKey: string | n
   window.location.hash = '#' + String(serverId) + '&' + encodeURIComponent(songKey);
 };
 
+// --- Editable-element guard (module scope, usable by any handler) ---
+const isEditableHostElement = (element: HTMLElement): boolean => {
+  const tagName = element.tagName.toLowerCase();
+  return tagName === 't-input' || tagName === 't-textarea';
+};
+
+const isEditableKeyEvent = (event: KeyboardEvent) => {
+  const path = event.composedPath();
+  for (const target of path) {
+    if (!(target instanceof HTMLElement)) {
+      continue;
+    }
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      return true;
+    }
+    if (target.isContentEditable) {
+      return true;
+    }
+    if (isEditableHostElement(target)) {
+      return true;
+    }
+  }
+
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
+    return true;
+  }
+  if (activeElement instanceof HTMLElement && isEditableHostElement(activeElement)) {
+    return true;
+  }
+  if (activeElement instanceof HTMLElement) {
+    const shadowActiveElement = activeElement.shadowRoot?.activeElement;
+    if (
+      shadowActiveElement instanceof HTMLInputElement ||
+      shadowActiveElement instanceof HTMLTextAreaElement
+    ) {
+      return true;
+    }
+    if (shadowActiveElement instanceof HTMLElement && shadowActiveElement.isContentEditable) {
+      return true;
+    }
+    if (
+      shadowActiveElement instanceof HTMLElement &&
+      isEditableHostElement(shadowActiveElement)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+// --- Arrow key handler (module scope to avoid DOMContentLoaded accumulation) ---
+const handleArrowKeyDown = (event: KeyboardEvent) => {
+  if (event.isComposing) {
+    return;
+  }
+  if (event.ctrlKey || event.metaKey || isEditableKeyEvent(event)) {
+    return;
+  }
+
+  const isArrow =
+    event.key === 'ArrowLeft' ||
+    event.key === 'ArrowRight' ||
+    event.key === 'ArrowUp' ||
+    event.key === 'ArrowDown';
+
+  if (!isArrow) {
+    return;
+  }
+
+  // Left/Right arrows: seek audio (works without modifiers)
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const increment = event.shiftKey
+      ? SHIFT_TIME
+      : event.altKey
+        ? ALT_TIME
+        : REGULAR_TIME;
+
+    const media = getActiveMedia();
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    const duration = media.duration || 0;
+    media.currentTime = Math.min(
+      duration,
+      Math.max(0, media.currentTime + direction * increment)
+    );
+    return;
+  }
+
+  // ArrowUp / ArrowDown — move selected marker (requires Alt, Shift, or both)
+  // Bare up/down with no modifier is a no-op (matches v1 behavior)
+  if (!event.shiftKey && !event.altKey) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const increment = event.shiftKey && event.altKey
+    ? SHIFT_TIME
+    : event.shiftKey
+      ? REGULAR_TIME
+      : ALT_TIME;
+
+  const markerSlider = document.getElementById('markerSlider') as MarkerSlider | null;
+  if (!markerSlider?.startMarkerId) {
+    return;
+  }
+
+  const songKey = getCurrentSongKey();
+  if (!songKey) {
+    return;
+  }
+
+  const songData = nDB.get(songKey) || {};
+  const markers: TroffMarker[] = Array.isArray(songData.markers) ? songData.markers : [];
+  const maxTime = markerSlider?.max ?? getActiveMedia().duration ?? 0;
+
+  // Find only the start marker index — not the range that includes the stop marker
+  let startNr = -1;
+  for (let k = 0; k < markers.length; k++) {
+    if (markers[k].id === markerSlider.startMarkerId) {
+      startNr = k;
+      break;
+    }
+  }
+  if (startNr === -1) return;
+
+  const direction = event.key === 'ArrowDown' ? 1 : -1;
+  const result = moveMarkers(markers, direction * increment, startNr, startNr + 1, maxTime);
+
+  nDB.setOnSong(songKey, 'markers', result);
+  updateMarkerSlider(markerSlider, false);
+};
+
+document.addEventListener('keydown', handleArrowKeyDown, true);
+
 // Initialize components and set up event listeners
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Global handler for the iOS WebKit IndexedDB connection-lost bug
+  // (WebKit Bug #273827 / #277615). When iOS kills the network process under
+  // memory pressure, Firebase's internal IndexedDB operations fail with this
+  // error and the only reliable fix is a page reload.
+  let storageErrorToastShown = false;
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    const message =
+      reason instanceof Error ? reason.message : String(reason ?? '');
+    if (
+      message.includes('Connection to Indexed Database server lost') ||
+      message.includes('IndexedDB server lost')
+    ) {
+      event.preventDefault(); // suppress noisy console/Sentry error
+      if (!storageErrorToastShown) {
+        storageErrorToastShown = true;
+        showToast(
+          'Troff lost its connection to storage (a known iOS issue). Please reload to continue.',
+          'error',
+          60000,
+          { label: 'Reload', onClick: () => window.location.reload() }
+        );
+      }
+    }
+  });
+
   // Sentry observability — mirrors script.ts initEnvironment without legacy
   // imports. Tag every event with app: 'v2' unconditionally, then set env,
   // version, and init once consent has been given.
@@ -1465,68 +1639,6 @@ document.addEventListener('DOMContentLoaded', () => {
     clearPlaybackCountdown();
   };
 
-  const isEditableHostElement = (element: HTMLElement): boolean => {
-    const tagName = element.tagName.toLowerCase();
-    return tagName === 't-input' || tagName === 't-textarea';
-  };
-
-  const isEditableKeyEvent = (event: KeyboardEvent) => {
-    const path = event.composedPath();
-    for (const target of path) {
-      if (!(target instanceof HTMLElement)) {
-        continue;
-      }
-
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-        return true;
-      }
-
-      if (target.isContentEditable) {
-        return true;
-      }
-
-      if (isEditableHostElement(target)) {
-        return true;
-      }
-    }
-
-    const activeElement = document.activeElement;
-    if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
-      return true;
-    }
-
-    if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
-      return true;
-    }
-
-    if (activeElement instanceof HTMLElement && isEditableHostElement(activeElement)) {
-      return true;
-    }
-
-    if (activeElement instanceof HTMLElement) {
-      const shadowActiveElement = activeElement.shadowRoot?.activeElement;
-      if (
-        shadowActiveElement instanceof HTMLInputElement ||
-        shadowActiveElement instanceof HTMLTextAreaElement
-      ) {
-        return true;
-      }
-
-      if (shadowActiveElement instanceof HTMLElement && shadowActiveElement.isContentEditable) {
-        return true;
-      }
-
-      if (
-        shadowActiveElement instanceof HTMLElement &&
-        isEditableHostElement(shadowActiveElement)
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  };
-
   const getPauseBeforeDelay = (settingKey: string) => {
     if (!footer || !nDB.get(settingKey) || footer.disablePauseBefore) {
       return 0;
@@ -2197,50 +2309,59 @@ document.addEventListener('DOMContentLoaded', () => {
       await import('./assets/internal/notify-js/notify.config.js');
       const { auth, onAuthStateChanged } = await import('./services/firebaseClient.js');
       onAuthStateChanged(auth, async (user) => {
-        currentUserSignedIn = user !== null;
-        currentUserEmail = user?.email ?? '';
-        if (settingsPanel) {
-          settingsPanel.signedIn = user !== null;
-          settingsPanel.userName = user?.displayName ?? '';
-          settingsPanel.userPhotoUrl = user?.photoURL ?? '';
-        }
-        if (groupDialog) {
-          groupDialog.signedIn = user !== null;
-          groupDialog.userEmail = user?.email ?? '';
-        }
-
-        if (!user) {
-          // Tear down any active Firestore listeners when signing out
-          teardownListeners();
-        }
-
-        if (user) {
-          // Fetch groups and songs from Firestore, cache them, and update local DB
-          await syncFirebaseGroups(user.email ?? '');
-
-          // Reload song list to reflect newly cached Firebase songs
-          if (songList && typeof (songList as any).reloadSongs === 'function') {
-            await (songList as any).reloadSongs();
+        try {
+          currentUserSignedIn = user !== null;
+          currentUserEmail = user?.email ?? '';
+          if (settingsPanel) {
+            settingsPanel.signedIn = user !== null;
+            settingsPanel.userName = user?.displayName ?? '';
+            settingsPanel.userPhotoUrl = user?.photoURL ?? '';
+          }
+          if (songList) {
+            songList.signedIn = user !== null;
+            songList.userName = user?.displayName ?? '';
+            songList.userPhotoUrl = user?.photoURL ?? '';
+          }
+          if (groupDialog) {
+            groupDialog.signedIn = user !== null;
+            groupDialog.userEmail = user?.email ?? '';
           }
 
-          // Set up real-time listeners for Firebase song changes
-          await setupListeners();
-          await setupGroupSongListeners();
-          setLiveUpdateCallback((songKey: string) => {
-            // If the updated song is currently selected, refresh UI without interrupting playback
-            refreshCurrentSongUI(songKey);
-          });
-          setGroupUpdateCallback(() => {
-            // Refresh the group song list when a group's songs change remotely
-            if (songList && typeof (songList as any).reloadSongs === 'function') {
-              (songList as any).reloadSongs();
-            }
-          });
+          if (!user) {
+            // Tear down any active Firestore listeners when signing out
+            teardownListeners();
+          }
 
-          // A song that was already open (auto-restored) at boot may have had
-          // its markers drawn from stale nDB before this sync completed. Re-render
-          // it deterministically so synced markers/settings appear immediately.
-          refreshCurrentSongUI();
+          if (user) {
+            // Fetch groups and songs from Firestore, cache them, and update local DB
+            await syncFirebaseGroups(user.email ?? '');
+
+            // Reload song list to reflect newly cached Firebase songs
+            if (songList && typeof (songList as any).reloadSongs === 'function') {
+              await (songList as any).reloadSongs();
+            }
+
+            // Set up real-time listeners for Firebase song changes
+            await setupListeners();
+            await setupGroupSongListeners();
+            setLiveUpdateCallback((songKey: string) => {
+              // If the updated song is currently selected, refresh UI without interrupting playback
+              refreshCurrentSongUI(songKey);
+            });
+            setGroupUpdateCallback(() => {
+              // Refresh the group song list when a group's songs change remotely
+              if (songList && typeof (songList as any).reloadSongs === 'function') {
+                (songList as any).reloadSongs();
+              }
+            });
+
+            // A song that was already open (auto-restored) at boot may have had
+            // its markers drawn from stale nDB before this sync completed. Re-render
+            // it deterministically so synced markers/settings appear immediately.
+            refreshCurrentSongUI();
+          }
+        } catch (error) {
+          log.e('onAuthStateChanged callback failed:', error);
         }
       });
     } catch (error) {
