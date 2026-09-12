@@ -11,15 +11,6 @@ import '../atom/t-icon.js';
 
 type ToggleSetting =
   | 'playFullSong'
-  | 'enterUseTimer'
-  | 'enterResetCounter'
-  | 'enterGoToMarker'
-  | 'spaceUseTimer'
-  | 'spaceResetCounter'
-  | 'spaceGoToMarker'
-  | 'playUseTimer'
-  | 'playResetCounter'
-  | 'playGoToMarker'
   | 'extendedMarkerColor'
   | 'extraExtendedMarkerColor'
   | 'keepScreenOn'
@@ -381,15 +372,6 @@ export class SettingsPanel extends LitElement {
   @property({ type: Number }) defaultSpeedValue = 100;
 
   // Global controls (app-wide settings)
-  @property({ type: Boolean }) enterUseTimer = true;
-  @property({ type: Boolean }) enterResetCounter = true;
-  @property({ type: Boolean }) enterGoToMarker = true;
-  @property({ type: Boolean }) spaceUseTimer = false;
-  @property({ type: Boolean }) spaceResetCounter = false;
-  @property({ type: Boolean }) spaceGoToMarker = false;
-  @property({ type: Boolean }) playUseTimer = true;
-  @property({ type: Boolean }) playResetCounter = true;
-  @property({ type: Boolean }) playGoToMarker = true;
   @property({ type: Boolean }) extendedMarkerColor = false;
   @property({ type: Boolean }) extraExtendedMarkerColor = false;
   @property({ type: Boolean }) keepScreenOn = true;
@@ -521,33 +503,6 @@ export class SettingsPanel extends LitElement {
     switch (setting) {
       case 'playFullSong':
         this.playFullSong = nextValue;
-        break;
-      case 'enterUseTimer':
-        this.enterUseTimer = nextValue;
-        break;
-      case 'enterResetCounter':
-        this.enterResetCounter = nextValue;
-        break;
-      case 'enterGoToMarker':
-        this.enterGoToMarker = nextValue;
-        break;
-      case 'spaceUseTimer':
-        this.spaceUseTimer = nextValue;
-        break;
-      case 'spaceResetCounter':
-        this.spaceResetCounter = nextValue;
-        break;
-      case 'spaceGoToMarker':
-        this.spaceGoToMarker = nextValue;
-        break;
-      case 'playUseTimer':
-        this.playUseTimer = nextValue;
-        break;
-      case 'playResetCounter':
-        this.playResetCounter = nextValue;
-        break;
-      case 'playGoToMarker':
-        this.playGoToMarker = nextValue;
         break;
       case 'extendedMarkerColor':
         this.extendedMarkerColor = nextValue;
@@ -729,116 +684,6 @@ export class SettingsPanel extends LitElement {
                 >
                   Dark mode
                 </t-butt>
-              </div>
-            </t-details>
-
-            <t-details
-              title="Behaviour of keys and buttons"
-              class="settings-width"
-              text="Configure what happens when you press the Enter key, Space key, or Play button."
-            >
-              <div class="settings-section">
-                <h3>Play Button</h3>
-                <div class="settings-grid">
-                  <div class="setting-item">
-                    <div class="action-buttons">
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playGoToMarker}
-                        @click=${() => this._toggleSetting('playGoToMarker', this.playGoToMarker)}
-                      >
-                        Go to marker
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playUseTimer}
-                        @click=${() => this._toggleSetting('playUseTimer', this.playUseTimer)}
-                      >
-                        Use timer
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.playResetCounter}
-                        @click=${() =>
-                          this._toggleSetting('playResetCounter', this.playResetCounter)}
-                      >
-                        Reset counter
-                      </t-butt>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="settings-section">
-                <h3>Enter Key</h3>
-                <div class="settings-grid">
-                  <div class="setting-item">
-                    <div class="action-buttons">
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.enterGoToMarker}
-                        @click=${() => this._toggleSetting('enterGoToMarker', this.enterGoToMarker)}
-                      >
-                        Go to marker
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.enterUseTimer}
-                        @click=${() => this._toggleSetting('enterUseTimer', this.enterUseTimer)}
-                      >
-                        Use timer
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.enterResetCounter}
-                        @click=${() =>
-                          this._toggleSetting('enterResetCounter', this.enterResetCounter)}
-                      >
-                        Reset counter
-                      </t-butt>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="settings-section">
-                <h3>Space Key</h3>
-                <div class="settings-grid">
-                  <div class="setting-item">
-                    <div class="action-buttons">
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.spaceGoToMarker}
-                        @click=${() => this._toggleSetting('spaceGoToMarker', this.spaceGoToMarker)}
-                      >
-                        Go to marker
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.spaceUseTimer}
-                        @click=${() => this._toggleSetting('spaceUseTimer', this.spaceUseTimer)}
-                      >
-                        Use timer
-                      </t-butt>
-                      <t-butt
-                        toggle
-                        ellipsis
-                        .active=${this.spaceResetCounter}
-                        @click=${() =>
-                          this._toggleSetting('spaceResetCounter', this.spaceResetCounter)}
-                      >
-                        Reset counter
-                      </t-butt>
-                    </div>
-                  </div>
-                </div>
               </div>
             </t-details>
 

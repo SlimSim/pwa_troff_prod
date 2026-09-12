@@ -73,6 +73,15 @@ export class TButt extends LitElement {
       height: 3.2rem;
     }
 
+    /* Style for SLIM + ROUND button (smaller circle) */
+    .base.slim.round {
+      width: 1.8rem;
+      height: 1.8rem;
+      min-width: 1.8rem;
+      min-height: 1.8rem;
+      font-size: 0.75rem;
+    }
+
     /* STYLE for the TOGGLE button */
     :host([toggle]) .base {
       background-color: var(--toggle-button-color, lightgray);
@@ -200,6 +209,8 @@ export class TButt extends LitElement {
 
   private _handleKeyDown(event: KeyboardEvent) {
     if (this.disabled || this._isEditableKeyEvent(event)) return;
+    if (event.isComposing || event.repeat) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
 
     if (this._confirming && event.key === 'Escape') {
       event.preventDefault();
@@ -207,11 +218,7 @@ export class TButt extends LitElement {
       return;
     }
 
-    if (
-      event.key.toLowerCase() === this.key.toLowerCase() &&
-      event.altKey === this.alt &&
-      event.shiftKey === this.shift
-    ) {
+    if (event.key.toLowerCase() === this.key.toLowerCase()) {
       event.preventDefault();
       (this.shadowRoot?.querySelector('.base') as HTMLElement)?.click();
     }

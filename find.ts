@@ -68,7 +68,7 @@ $(document).ready(async function () {
 
   let firebaseUser: User | null = null;
   let serverSongListHistory: ServerSong[];
-  let allPublicTroffDataFromServer: PublicTroffDataFromServer[];
+  let allPublicTroffDataFromServer: PublicTroffDataFromServer[] = [];
 
   const googleSignIn = async function () {
     try {
@@ -650,7 +650,7 @@ $(document).ready(async function () {
       displayName: getDisplayNameFromTroffData(troffDataP, 'Unknown'),
       nrMarkers: troffDataP.songData.markers.length,
       nrStates: troffDataP.songData.aStates ? troffDataP.songData.aStates.length : 0,
-      infoBeginning: troffDataP.songData.info.substring(0, 99),
+      infoBeginning: (troffDataP.songData.info || '').substring(0, 99),
       genre: (troffDataP.songData.fileData && troffDataP.songData.fileData.genre) || '',
       tags: (troffDataP.songData.fileData && troffDataP.songData.fileData.tags) || '',
     };

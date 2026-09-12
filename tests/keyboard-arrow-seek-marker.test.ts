@@ -244,14 +244,6 @@ describe('Keyboard arrow key functionality', () => {
 
     settingsPanel = document.createElement('div');
     settingsPanel.id = 'settingsPanel';
-    settingsPanel.playUseTimer = false;
-    settingsPanel.playResetCounter = false;
-    settingsPanel.enterUseTimer = false;
-    settingsPanel.enterResetCounter = false;
-    settingsPanel.enterGoToMarker = false;
-    settingsPanel.spaceUseTimer = false;
-    settingsPanel.spaceResetCounter = false;
-    settingsPanel.spaceGoToMarker = false;
     settingsPanel.visible = false;
     settingsPanel.startBeforeValue = 0;
     settingsPanel.startBeforeDisabled = false;

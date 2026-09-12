@@ -30,7 +30,6 @@ export class BottomNav extends LitElement {
   @property({ type: Number }) waitBetween = 1;
   @property({ type: Boolean }) disablePauseBefore = false;
   @property({ type: Boolean }) disableWaitBetween = false;
-  @property({ type: Boolean }) playUseTimer = true;
   @property({ type: Number }) songDuration = 0;
 
   connectedCallback() {
@@ -89,18 +88,47 @@ export class BottomNav extends LitElement {
       width: min(280px, calc(100vw - 24px));
     }
 
+    .play-button-wrapper {
+      position: relative;
+    }
+
     .play-button-content {
+      position: relative;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      width: 3.2rem;
+      height: 3.2rem;
       line-height: 0.9;
+      font-size: 1.4rem;
+    }
+
+    .reset-icon-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      bottom: 2.75px;
+      font-size: 42px;
+    }
+
+    .reset-icon-overlay t-icon {
+      width: 100%;
+      height: 100%;
     }
 
     .play-countdown {
       font-size: 0.85em;
       font-weight: 700;
     }
+
+    .quick-play-button {
+      position: absolute;
+      top: -12px;
+      right: -12px;
+      z-index: 1;
+    }
+
 
     @media (min-width: 768px) {
       .hide-on-wide {
@@ -336,23 +364,30 @@ export class BottomNav extends LitElement {
           </t-dropdown-button>
         </div>
 
-        <div class="nav-item" @click=${(e: Event) => this._handleNavClick(e, 'play')}>
-          <t-butt title="Play song" round important key=" ">
-            <div
-              class="play-button-content"
-              style=${(this.isStartingPlayback || (this.playUseTimer && !this.isPlaying && !this.disablePauseBefore && this.pauseBefore > 0))
-                ? 'font-size: 1.4rem'
-                : ''}
-            >
+        <div class="nav-item play-button-wrapper" @click=${(e: Event) => this._handleNavClick(e, 'play')}>
+          <t-butt
+            class="quick-play-button"
+            round important slim
+            key=" "
+            title="Play from current position"
+            @click=${(e: Event) => { e.stopPropagation(); this._handleNavClick(e, 'quick-play'); }}
+          >
+            <t-icon name="${this.isPlaying ? 'pause' : 'play'}" fullsize></t-icon>
+          </t-butt>
+          <t-butt class="main-play-button" title="Play song" round important key="Enter">
+            <div class="play-button-content">
+              <div class="reset-icon-overlay">
+                <t-icon name="jump-back" fullSize></t-icon>
+              </div>
               ${this.isStartingPlayback
                 ? html`<div class="play-countdown">${this.playbackCountdown}</div>`
-                : this.playUseTimer && !this.isPlaying && !this.disablePauseBefore && this.pauseBefore > 0
+                : !this.isPlaying && !this.disablePauseBefore && this.pauseBefore > 0
                   ? html`<div class="play-countdown">${this.pauseBefore}</div>`
                   : ''}
               <t-icon
                 name="${this.isPlaying || this.isStartingPlayback ? 'pause' : 'play'}"
-                ?fullSize=${!!(this.isStartingPlayback || (this.playUseTimer && this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore))}
-                ?large=${!(this.isStartingPlayback || (this.playUseTimer && this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore))}
+                ?fullSize=${!!(this.isStartingPlayback || (this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore))}
+                ?large=${!(this.isStartingPlayback || (this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore))}
               ></t-icon>
             </div>
           </t-butt>
