@@ -173,12 +173,23 @@ $(() => {
   };
 
   fileHandler.fetchAndSaveResponse = async (fileUrl, songKey) => {
+    let freshUrl = fileUrl;
+    try {
+      const pathPart = fileUrl.split('/o/')[1];
+      if (pathPart) {
+        const storagePath = decodeURIComponent(pathPart.split('?')[0]);
+        freshUrl = await getDownloadURL(ref(storage, storagePath));
+      }
+    } catch {
+      log.d('fetchAndSaveResponse: could not refresh download URL, using original');
+    }
+
     const maxRetries = 3;
     let response: Response | undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        response = await fetch(fileUrl);
+        response = await fetch(freshUrl);
         if (response.ok && response.body != null && response.headers != null) {
           break;
         }

@@ -73,7 +73,22 @@ type FirestoreHandle = {
   ) => Promise<{ exists: () => boolean; data: () => Record<string, unknown> }>;
 };
 
+type StorageHandle = {
+  getFreshDownloadUrl: (fileUrl: string) => Promise<string>;
+};
+
 let cachedPromise: Promise<FirestoreHandle> | null = null;
+let cachedStoragePromise: Promise<StorageHandle> | null = null;
+
+/**
+ * Extract the Firebase Storage object path from a download URL.
+ * E.g. "…/o/TroffFiles%2Fabc123?alt=media&token=…" → "TroffFiles/abc123"
+ */
+function extractStoragePath(downloadUrl: string): string {
+  const pathPart = downloadUrl.split('/o/')[1];
+  if (!pathPart) return '';
+  return decodeURIComponent(pathPart.split('?')[0]);
+}
 
 /**
  * Lazily initialise Firebase Firestore and return its core API.
@@ -118,4 +133,51 @@ export async function getFirestore(): Promise<FirestoreHandle> {
 
   // cachedPromise was just assigned above, so it's definitely not null
   return cachedPromise!;
+}
+
+/**
+ * Lazily initialise Firebase Storage and return a helper that generates
+ * fresh, short-lived download URLs.  This avoids stale-token 403 errors
+ * when the stored `fileUrl` has an expired token.
+ */
+export async function getStorageHandle(): Promise<StorageHandle> {
+  if (cachedStoragePromise) return cachedStoragePromise;
+
+  cachedStoragePromise = (async () => {
+    const config = getFirebaseConfig();
+
+    type FirebaseAppModule = { initializeApp: (...args: unknown[]) => unknown; getApp: (...args: unknown[]) => unknown };
+    type FirebaseStorageModule = {
+      getStorage: (...args: unknown[]) => unknown;
+      ref: (...args: unknown[]) => unknown;
+      getDownloadURL: (...args: unknown[]) => Promise<string>;
+    };
+
+    const firebaseApp = (await import(
+      'https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js'
+    )) as unknown as FirebaseAppModule;
+    const firebaseStorage = (await import(
+      'https://www.gstatic.com/firebasejs/12.18.0/firebase-storage.js'
+    )) as unknown as FirebaseStorageModule;
+
+    const app = firebaseApp.initializeApp(config, 'troff-hash-download');
+    const storage = firebaseStorage.getStorage(app);
+    const refFn = firebaseStorage.ref as (storage: unknown, path: string) => unknown;
+    const getDownloadURL = firebaseStorage.getDownloadURL as (ref: unknown) => Promise<string>;
+
+    const getFreshDownloadUrl = async (fileUrl: string): Promise<string> => {
+      const storagePath = extractStoragePath(fileUrl);
+      if (!storagePath) return fileUrl;
+      try {
+        const storageRef = refFn(storage, storagePath);
+        return await getDownloadURL(storageRef);
+      } catch {
+        return fileUrl;
+      }
+    };
+
+    return { getFreshDownloadUrl };
+  })();
+
+  return cachedStoragePromise!;
 }
