@@ -1,11 +1,45 @@
 import log from './log.js';
 
+interface SentryExceptionValue {
+  type?: string;
+  value?: string;
+}
+
+interface SentryEvent {
+  exception?: {
+    values?: SentryExceptionValue[];
+  };
+}
+
+interface SentryInitOptions {
+  dsn: string;
+  environment: string;
+  release: string;
+  sendDefaultPii: boolean;
+  tags: { app: 'v1' | 'v2' };
+  beforeSend: (event: SentryEvent) => SentryEvent | null;
+}
+
 declare global {
   const Sentry: {
-    init: (options: any) => void;
+    init: (options: SentryInitOptions) => void;
     captureException: (error: Error) => void;
     // Add other methods if needed, e.g., captureException, etc.
   };
+}
+
+function isBenignPlayAbort(event: SentryEvent): boolean {
+  const values = event.exception?.values ?? [];
+  return values.some((entry) => {
+    const type = entry.type ?? '';
+    const value = entry.value ?? '';
+    return (
+      type === 'AbortError' ||
+      value.includes('The operation was aborted') ||
+      value.includes('play() request was interrupted') ||
+      value.includes('interrupted by a call to pause')
+    );
+  });
 }
 
 let version = '0';
@@ -59,7 +93,12 @@ function checkSentry() {
       release: 'pwa_troff@' + version,
       sendDefaultPii: false,
       tags: { app: generation },
-      beforeSend(event: any) {
+      beforeSend(event: SentryEvent) {
+        // play() interrupted by pause()/load() rejects with AbortError
+        // (DOMException code 20). Benign browser noise, not a real bug.
+        if (isBenignPlayAbort(event)) {
+          return null;
+        }
         return event;
       },
     });

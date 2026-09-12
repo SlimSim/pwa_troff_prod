@@ -20,12 +20,23 @@ import { describe, it, expect, vi } from 'vitest';
 
 // Shape of the Sentry.init options. `tags` does not exist in the current
 // implementation — it is part of the feature contract under test.
+interface SentryExceptionValue {
+  type?: string;
+  value?: string;
+}
+
+interface SentryEvent {
+  exception?: {
+    values?: SentryExceptionValue[];
+  };
+}
+
 interface SentryInitOptions {
   dsn: string;
   environment: string;
   release: string;
   sendDefaultPii: boolean;
-  beforeSend: (event: unknown) => unknown;
+  beforeSend: (event: SentryEvent) => SentryEvent | null;
   tags?: { app: 'v1' | 'v2' };
 }
 
@@ -102,5 +113,64 @@ describe('utils/sentry.ts — app-generation tagging', () => {
     module.SentryCaptureException(error);
 
     expect(sentryMock.captureException).toHaveBeenCalledWith(error);
+  });
+});
+
+describe('utils/sentry.ts — benign play() AbortError filtering', () => {
+  async function getBeforeSend() {
+    const { module, sentryMock } = await loadSentryModule();
+    module.addAndStartSentry();
+    const initOptions = sentryMock.init.mock.calls[0]![0];
+    return initOptions.beforeSend;
+  }
+
+  it('drops unhandled AbortError from interrupted play()', async () => {
+    const beforeSend = await getBeforeSend();
+
+    const event: SentryEvent = {
+      exception: { values: [{ type: 'AbortError', value: 'AbortError: The operation was aborted.' }] },
+    };
+    expect(beforeSend(event)).toBeNull();
+  });
+
+  it('drops play() request interrupted by pause', async () => {
+    const beforeSend = await getBeforeSend();
+
+    const event: SentryEvent = {
+      exception: {
+        values: [
+          {
+            type: 'AbortError',
+            value:
+              "AbortError: The play() request was interrupted by a call to pause().",
+          },
+        ],
+      },
+    };
+    expect(beforeSend(event)).toBeNull();
+  });
+
+  it('keeps real errors', async () => {
+    const beforeSend = await getBeforeSend();
+
+    const event: SentryEvent = {
+      exception: {
+        values: [
+          {
+            type: 'TypeError',
+            value:
+              "TypeError: null is not an object (evaluating 'document.getElementById('loadScreenButtonParent').style')",
+          },
+        ],
+      },
+    };
+    expect(beforeSend(event)).toBe(event);
+  });
+
+  it('keeps events without exceptions', async () => {
+    const beforeSend = await getBeforeSend();
+
+    const event: SentryEvent = {};
+    expect(beforeSend(event)).toBe(event);
   });
 });

@@ -1274,7 +1274,9 @@ class TroffClass {
     if (wait > 0) {
       // Hack to force Safari to play the sound after the timeout:
       if (isSafari) {
-        audio.play();
+        // play() immediately followed by pause() rejects with AbortError.
+        // Catch it so it doesn't surface as an unhandled rejection in Sentry.
+        void audio.play().catch(() => undefined);
         audio.pause();
       }
       this.stopTimeout = setTimeout(localPlayAndSetMood, wait);
