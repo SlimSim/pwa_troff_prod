@@ -1,7 +1,7 @@
 import { nDB } from '../assets/internal/db.js';
 import { TROFF_TROFF_DATA_ID_AND_FILE_NAME } from '../constants/constants.js';
 import log from './log.js';
-import { getFirestore } from './firebase-getter.js';
+import { getFirestore, getStorageHandle } from './firebase-getter.js';
 import { normalizeMarkerTime } from './marker-actions.js';
 import { safeDecodeURIComponent, toSongKey } from './utils.js';
 import type { TroffData, TroffMarker, TroffHistoryList, TroffDataIdObject } from '../types/troff.d.js';
@@ -217,11 +217,14 @@ async function fetchAndCacheFile(
   songKey: string,
   onProgress?: (loaded: number, total: number) => void
 ): Promise<void> {
+  const storageHandle = await getStorageHandle();
+  const freshUrl = await storageHandle.getFreshDownloadUrl(fileUrl);
+
   const maxRetries = 3;
   let response: Response | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      response = await fetch(fileUrl);
+      response = await fetch(freshUrl);
       if (response.ok) {
         break;
       }
