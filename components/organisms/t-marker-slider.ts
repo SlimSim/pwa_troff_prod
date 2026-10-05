@@ -1,6 +1,8 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type { TroffMarker } from '../../types/troff.js';
+import { nDB } from '../../assets/internal/db.js';
+import { TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER } from '../../constants/constants.js';
 import { getBgColor } from '../../utils/colorHelpers.js';
 import { computeZoomScrollDelta } from '../../utils/zoom.js';
 import '../atom/t-butt.js';
@@ -17,6 +19,8 @@ export class MarkerSlider extends LitElement {
       user-select: none;
       height: 100%;
       width: 100%;
+      overscroll-behavior: none;
+      touch-action: none;
     }
 
     .slider-container {
@@ -114,6 +118,15 @@ export class MarkerSlider extends LitElement {
   private initialPinchDistance = 0;
   private initialZoom = 1;
   private lastMidpointY = 0;
+  private isSingleFingerScrolling = false;
+  private lastSinglePanY = 0;
+
+  private _boundMouseMove = (event: MouseEvent): void => this._handleMouseMove(event);
+  private _boundMouseUp = (): void => this._handleMouseUp();
+  private _boundWheel = (event: WheelEvent): void => this._handleWheel(event);
+  private _boundTouchStart = (event: TouchEvent): void => this._handleTouchStart(event);
+  private _boundTouchMove = (event: TouchEvent): void => this._handleTouchMove(event);
+  private _boundTouchEnd = (event: TouchEvent): void => this._handleTouchEnd(event);
 
   private _getTrackElement(): HTMLElement | null {
     return this.shadowRoot?.querySelector('.slider-track-wrapper') ?? null;
@@ -121,22 +134,23 @@ export class MarkerSlider extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    document.addEventListener('mousemove', this._handleMouseMove.bind(this));
-    document.addEventListener('mouseup', this._handleMouseUp.bind(this));
-    this.addEventListener('wheel', this._handleWheel.bind(this));
-    this.addEventListener('touchstart', this._handleTouchStart.bind(this));
-    this.addEventListener('touchmove', this._handleTouchMove.bind(this));
-    this.addEventListener('touchend', this._handleTouchEnd.bind(this));
+    document.addEventListener('mousemove', this._boundMouseMove);
+    document.addEventListener('mouseup', this._boundMouseUp);
+    this.addEventListener('wheel', this._boundWheel);
+    // Non-passive so preventDefault() reliably suppresses pull-to-refresh.
+    this.addEventListener('touchstart', this._boundTouchStart, { passive: false });
+    this.addEventListener('touchmove', this._boundTouchMove, { passive: false });
+    this.addEventListener('touchend', this._boundTouchEnd);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    document.removeEventListener('mousemove', this._handleMouseMove.bind(this));
-    document.removeEventListener('mouseup', this._handleMouseUp.bind(this));
-    this.removeEventListener('wheel', this._handleWheel.bind(this));
-    this.removeEventListener('touchstart', this._handleTouchStart.bind(this));
-    this.removeEventListener('touchmove', this._handleTouchMove.bind(this));
-    this.removeEventListener('touchend', this._handleTouchEnd.bind(this));
+    document.removeEventListener('mousemove', this._boundMouseMove);
+    document.removeEventListener('mouseup', this._boundMouseUp);
+    this.removeEventListener('wheel', this._boundWheel);
+    this.removeEventListener('touchstart', this._boundTouchStart);
+    this.removeEventListener('touchmove', this._boundTouchMove);
+    this.removeEventListener('touchend', this._boundTouchEnd);
   }
 
   private _getPositionPercent(val: number): number {
@@ -244,7 +258,10 @@ export class MarkerSlider extends LitElement {
   private _handleMarkerClick(event: CustomEvent, marker: TroffMarker) {
     event.stopPropagation();
     this.startMarkerId = marker.id;
-    this.value = this.getPlaybackStart();
+    const goToMarker: boolean = nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
+    if (goToMarker) {
+      this.value = this.getPlaybackStart();
+    }
 
     // If the new start is at or after the current stop, reset stop to the
     // last marker so the playback region always has positive duration.
@@ -260,7 +277,9 @@ export class MarkerSlider extends LitElement {
       );
     }
 
-    this._dispatchValueChanged();
+    if (goToMarker) {
+      this._dispatchValueChanged();
+    }
     this.dispatchEvent(
       new CustomEvent('set-start-marker', {
         detail: { markerId: marker.id },
@@ -343,6 +362,7 @@ export class MarkerSlider extends LitElement {
     if (event.touches.length === 2) {
       this.isTouchDragging = false;
       this.isDragging = false;
+      this.isSingleFingerScrolling = false;
       this.isPinching = true;
       this.initialPinchDistance = this._getDistance(event.touches[0], event.touches[1]);
       this.initialZoom = this.zoomLevel;
@@ -368,6 +388,9 @@ export class MarkerSlider extends LitElement {
           this.isDragging = true;
           event.preventDefault();
           this._updatePositionFromTouch(touch);
+        } else {
+          this.isSingleFingerScrolling = true;
+          this.lastSinglePanY = touch.clientY;
         }
       }
     }
@@ -386,6 +409,17 @@ export class MarkerSlider extends LitElement {
     } else if (this.isTouchDragging && event.touches.length === 1) {
       event.preventDefault();
       this._updatePositionFromTouch(event.touches[0]);
+    } else if (this.isSingleFingerScrolling && event.touches.length === 1) {
+      const currentY = event.touches[0].clientY;
+      const delta = this.lastSinglePanY - currentY;
+      this.lastSinglePanY = currentY;
+      if (delta !== 0) {
+        const scrollContainer = this._getScrollContainer();
+        if (scrollContainer) {
+          scrollContainer.scrollTop += delta;
+        }
+        event.preventDefault();
+      }
     }
   }
 
@@ -396,6 +430,7 @@ export class MarkerSlider extends LitElement {
     if (event.touches.length === 0) {
       this.isTouchDragging = false;
       this.isDragging = false;
+      this.isSingleFingerScrolling = false;
     }
   }
 
@@ -553,7 +588,10 @@ export class MarkerSlider extends LitElement {
 
     this.startMarkerId = nextMarker.id;
 
-    this._dispatchValueChanged();
+    const goToMarker: boolean = nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
+    if (goToMarker) {
+      this._dispatchValueChanged();
+    }
     this.dispatchEvent(
       new CustomEvent('set-start-marker', {
         detail: { markerId: nextMarker.id },
@@ -597,8 +635,11 @@ export class MarkerSlider extends LitElement {
 
     this.startMarkerId = prevMarker.id;
 
-    this.value = this.getPlaybackStart();
-    this._dispatchValueChanged();
+    const goToMarker: boolean = nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
+    if (goToMarker) {
+      this.value = this.getPlaybackStart();
+      this._dispatchValueChanged();
+    }
     this.dispatchEvent(
       new CustomEvent('set-start-marker', {
         detail: { markerId: prevMarker.id },

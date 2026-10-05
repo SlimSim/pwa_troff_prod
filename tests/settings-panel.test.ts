@@ -650,83 +650,37 @@ describe('SettingsPanel numeric settings integration', () => {
     });
   });
 
-  describe('Portrait setting', () => {
-    describe('default property values', () => {
-      it('should have default portrait of true', () => {
-        expect(settingsPanel.portrait).toBe(true);
-      });
-    });
+  describe('Portrait setting removed', () => {
+    it('should NOT render a Portrait toggle in Advanced Settings and expose no portrait property', async () => {
+      await settingsPanel.updateComplete;
+      expect('portrait' in settingsPanel).toBe(false);
 
-    describe('setting values from parent', () => {
-      it('should update portrait when property is set', async () => {
-        settingsPanel.portrait = false;
-        await settingsPanel.updateComplete;
-        expect(settingsPanel.portrait).toBe(false);
-      });
+      const shells = Array.from(settingsPanel.shadowRoot?.querySelectorAll('.settings-shell') ?? []);
+      const globalShell = shells.find((shell) =>
+        shell.querySelector('t-help-tip[h3="Global Controls"]')
+      );
+      expect(globalShell, 'expected to find .settings-shell containing Global Controls help-tip').toBeTruthy();
 
-      it('should toggle portrait back to true', async () => {
-        settingsPanel.portrait = false;
-        await settingsPanel.updateComplete;
-        settingsPanel.portrait = true;
-        await settingsPanel.updateComplete;
-        expect(settingsPanel.portrait).toBe(true);
-      });
-    });
+      // Find the Advanced Settings t-details
+      const details = Array.from(globalShell!.querySelectorAll('t-details') ?? []);
+      const advanced = details.find((d) => d.getAttribute('title') === 'Advanced Settings');
+      expect(advanced, 'expected to find Advanced Settings t-details').toBeTruthy();
 
-    describe('setting-changed event dispatch', () => {
-      it('should dispatch setting-changed when portrait is toggled on', () => {
-        const handler = vi.fn();
-        settingsPanel.addEventListener('setting-changed', handler);
+      const butts = Array.from(advanced!.querySelectorAll('t-butt') ?? []);
+      const portraitButt = butts.find((b) =>
+        (b.textContent || '').trim().toLowerCase().includes('portrait')
+      );
 
-        // @ts-expect-error - accessing private method for testing
-        settingsPanel._toggleSetting('portrait', false);
+      expect(portraitButt, 'expected NO Portrait button in Advanced Settings').toBeUndefined();
 
-        expect(settingsPanel.portrait).toBe(true);
-        expect(handler).toHaveBeenCalledWith(
-          expect.objectContaining({
-            detail: { setting: 'portrait', value: true },
-          })
-        );
-      });
+      // Strengthened: _toggleSetting('portrait', ...) must be a no-op that does not dispatch setting-changed.
+      const handler = vi.fn();
+      settingsPanel.addEventListener('setting-changed', handler);
 
-      it('should toggle portrait off via _toggleSetting', () => {
-        settingsPanel.portrait = true;
-        const handler = vi.fn();
-        settingsPanel.addEventListener('setting-changed', handler);
+      // @ts-expect-error - accessing private method for testing; portrait setting removed so this must be a no-op
+      settingsPanel._toggleSetting('portrait', false);
 
-        // @ts-expect-error - accessing private method for testing
-        settingsPanel._toggleSetting('portrait', true);
-
-        expect(settingsPanel.portrait).toBe(false);
-        expect(handler).toHaveBeenCalledWith(
-          expect.objectContaining({
-            detail: { setting: 'portrait', value: false },
-          })
-        );
-      });
-    });
-
-    describe('rendered portrait toggle in Advanced Settings section', () => {
-      it('should render a <t-butt toggle> for "Portrait" inside the Advanced Settings section', () => {
-        const shells = Array.from(settingsPanel.shadowRoot?.querySelectorAll('.settings-shell') ?? []);
-        const globalShell = shells.find((shell) =>
-          shell.querySelector('t-help-tip[h3="Global Controls"]')
-        );
-        expect(globalShell, 'expected to find .settings-shell containing Global Controls help-tip').toBeTruthy();
-
-        // Find the Advanced Settings t-details
-        const details = Array.from(globalShell!.querySelectorAll('t-details') ?? []);
-        const advanced = details.find((d) => d.getAttribute('title') === 'Advanced Settings');
-        expect(advanced, 'expected to find Advanced Settings t-details').toBeTruthy();
-
-        const butts = Array.from(advanced!.querySelectorAll('t-butt') ?? []);
-        const portraitButt = butts.find((b) =>
-          (b.textContent || '').trim().toLowerCase().includes('portrait')
-        );
-
-        expect(portraitButt, 'expected to find a Portrait button in Advanced Settings').toBeTruthy();
-        expect(portraitButt!.hasAttribute('toggle')).toBe(true);
-      });
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 });
@@ -804,6 +758,7 @@ describe('SettingsPanel advanced panels use t-details', () => {
     const titles = getDetailsPanels().map((panel) => panel.title);
     expect(titles).toEqual([
       'Theme',
+      'Visibility',
       'Marker color',
       'Default Song Values',
       'Advanced Settings',
@@ -826,5 +781,104 @@ describe('SettingsPanel advanced panels use t-details', () => {
 
   it('no longer renders raw native <details> elements in its own shadow root', async () => {
     expect(settingsPanel.shadowRoot?.querySelector('details')).toBeNull();
+  });
+});
+
+describe('SettingsPanel Advanced Settings reload/restart button (v1 parity)', () => {
+  let settingsPanel: SettingsPanelType;
+
+  beforeEach(async () => {
+    // Dynamic import - the child element registrations happen once due to ESM caching
+    const { SettingsPanel } = await import('../components/molecule/t-settings-panel.js');
+
+    settingsPanel = new SettingsPanel();
+    document.body.appendChild(settingsPanel);
+    await settingsPanel.updateComplete;
+  });
+
+  afterEach(() => {
+    if (settingsPanel && document.body.contains(settingsPanel)) {
+      document.body.removeChild(settingsPanel);
+    }
+    vi.restoreAllMocks();
+  });
+
+  function findAdvancedDetails(): DetailsElement | undefined {
+    const globalSettings = settingsPanel.shadowRoot?.querySelector('.global-settings');
+    if (!globalSettings) return undefined;
+    const details = Array.from(
+      globalSettings.querySelectorAll('t-details')
+    ) as DetailsElement[];
+    return details.find((d) => d.getAttribute('title') === 'Advanced Settings');
+  }
+
+  function findReloadButton(advanced: Element): Element | undefined {
+    const butts = Array.from(advanced.querySelectorAll('t-butt'));
+    return butts.find((b) => {
+      const text = (b.textContent ?? '').toLowerCase();
+      const title = (b.getAttribute('title') ?? '').toLowerCase();
+      const hasReloadIcon = b.querySelector('t-icon[name="reload"]') !== null;
+      return /reload|restart/.test(text) || /reload|restart/.test(title) || hasReloadIcon;
+    });
+  }
+
+  it('renders a Reload/Restart t-butt with reload icon inside Advanced Settings in div.global-settings', async () => {
+    await settingsPanel.updateComplete;
+
+    const globalSettings = settingsPanel.shadowRoot?.querySelector('div.global-settings');
+    expect(globalSettings, 'expected to find div.global-settings').toBeTruthy();
+
+    const advanced = findAdvancedDetails();
+    expect(
+      advanced,
+      'expected to find t-details[title="Advanced Settings"] inside div.global-settings'
+    ).toBeTruthy();
+
+    const reloadButt = findReloadButton(advanced as Element);
+    expect(
+      reloadButt,
+      'expected Advanced Settings t-details to contain a Reload/Restart t-butt (text matching /reload|restart/i or t-icon[name="reload"])'
+    ).toBeTruthy();
+
+    const icon = reloadButt?.querySelector('t-icon[name="reload"]');
+    expect(
+      icon,
+      'expected reload button to use <t-icon name="reload"> (assets/icons/reload.svg)'
+    ).toBeTruthy();
+
+    const labelAndTitle = `${reloadButt?.textContent ?? ''} ${reloadButt?.getAttribute('title') ?? ''}`;
+    expect(labelAndTitle).toMatch(/reload|restart/i);
+    expect(reloadButt?.getAttribute('title') ?? '').toMatch(/restart|reload/i);
+  });
+
+  it('calls updatePWA() from utils/pwa.js when the Reload button is clicked', async () => {
+    // Import the ACTUAL module under test - never re-implement updatePWA here.
+    const pwaModule = await import('../utils/pwa.js');
+    const updateSpy = vi
+      .spyOn(pwaModule, 'updatePWA')
+      .mockImplementation(() => Promise.resolve());
+    try {
+      await settingsPanel.updateComplete;
+
+      const advanced = findAdvancedDetails();
+      expect(
+        advanced,
+        'expected to find t-details[title="Advanced Settings"] inside div.global-settings'
+      ).toBeTruthy();
+
+      const reloadButt = findReloadButton(advanced as Element);
+      expect(
+        reloadButt,
+        'expected Advanced Settings t-details to contain a Reload/Restart t-butt before clicking'
+      ).toBeTruthy();
+
+      (reloadButt as HTMLElement).click();
+
+      // Allow a dynamic import('../../utils/pwa.js').then(...) handler
+      // (same pattern as _handleInstallClick) to resolve.
+      await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    } finally {
+      updateSpy.mockRestore();
+    }
   });
 });

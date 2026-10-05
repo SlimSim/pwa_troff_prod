@@ -151,6 +151,7 @@ export class TVideoPlayer extends LitElement {
       justify-content: space-between;
       align-items: center;
       z-index: 1;
+      padding: 0 8px;
     }
     .top-controls .video-btn,
     .top-controls .speed-info,
@@ -323,7 +324,6 @@ export class TVideoPlayer extends LitElement {
   @property({ type: Array }) markers: TroffMarker[] = [];
   @property({ type: String }) startMarkerId = '';
   @property({ type: Number }) speed = 100;
-  @property({ type: Boolean }) portrait = false;
 
   @property({ type: Number }) zoomScale = 1;
   @property({ type: Number }) zoomPanX = 0;
@@ -461,11 +461,7 @@ export class TVideoPlayer extends LitElement {
       this._clearFullscreenHintBufferTimer();
       this._fullscreenHintBuffer = false;
       if (wasFullscreen) {
-        if (this.portrait) {
-          this._lockOrientation('portrait');
-        } else {
-          this._unlockOrientation();
-        }
+        this._unlockOrientation();
       }
     } else {
       this._scheduleControlsHide();
@@ -605,16 +601,6 @@ export class TVideoPlayer extends LitElement {
       video.addEventListener('play', this._onVideoPlay);
       video.addEventListener('pause', this._onVideoPause);
       video.addEventListener('seeked', this._onVideoSeeked);
-    }
-  }
-
-  updated(changedProperties: Map<string, unknown>) {
-    if (changedProperties.has('portrait') && !this._isFullscreen) {
-      if (this.portrait) {
-        this._lockOrientation('portrait');
-      } else {
-        this._unlockOrientation();
-      }
     }
   }
 

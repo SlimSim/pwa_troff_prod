@@ -3,20 +3,26 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { getManifest } from '../../utils/manifestHelper.js';
 import type { PwaInstallState } from '../../utils/pwa.js';
 import { nDB } from '../../assets/internal/db.js';
+import {
+  TROFF_SETTING_UI_LOOP_BUTTONS_SHOW,
+  TROFF_SETTING_UI_PLAY_FULL_SONG_BUTTONS_SHOW,
+  TROFF_SETTING_UI_ZOOM_SHOW,
+  TROFF_SETTING_UI_FULL_SCREEN_COUNTDOWN,
+} from '../../constants/constants.js';
 import '../atom/t-butt.js';
 import '../atom/t-dropdown-button.js';
 import '../atom/t-details.js';
 import '../atom/t-slide-stepper.js';
 import '../atom/t-icon.js';
+import '../atom/t-loading.js';
 
 type ToggleSetting =
-  | 'playFullSong'
   | 'extendedMarkerColor'
   | 'extraExtendedMarkerColor'
   | 'keepScreenOn'
   | 'darkMode'
   | 'bannerShow'
-  | 'portrait';
+  | 'onSelectMarkerGoToMarker';
 
 type SongNumericSetting = 'startBefore' | 'stopAfter' | 'incrementUntill';
 
@@ -109,9 +115,21 @@ export class SettingsPanel extends LitElement {
       overflow: hidden;
     }
 
+    .auth-busy {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
     .settings-section {
       margin-bottom: 20px;
       width: var(--settings-column-width);
+    }
+
+    .settings-sub {
+      margin: 0;
+      margin-top: 8px;
     }
 
     .settings-shell {
@@ -120,7 +138,7 @@ export class SettingsPanel extends LitElement {
       flex-wrap: wrap;
       gap: 16px;
 
-      justify-content: space-between;
+      justify-content: space-around;
     }
 
     .settings-shell t-current-song-controls {
@@ -311,7 +329,7 @@ export class SettingsPanel extends LitElement {
       }
 
       .action-buttons {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        /* grid-template-columns: repeat(3, minmax(0, 1fr));*/
       }
 
       .song-action-buttons {
@@ -332,6 +350,7 @@ export class SettingsPanel extends LitElement {
   @property({ type: Boolean }) signedIn = false;
   @property({ type: String }) userName = '';
   @property({ type: String }) userPhotoUrl = '';
+  @property({ type: Boolean }) authBusy = false;
 
   @state() private installState: PwaInstallState = 'unavailable';
   private _unsubscribeInstallState?: () => void;
@@ -346,7 +365,6 @@ export class SettingsPanel extends LitElement {
 
   // Current Song Controls - forwarded to t-current-song-controls (for mobile settings panel)
   @property({ type: String }) loopTimesValue = '1';
-  @property({ type: Boolean }) playFullSong = false;
   @property({ type: Number }) startBeforeValue = 0;
   @property({ type: Boolean }) startBeforeDisabled = false;
   @property({ type: Number }) stopAfterValue = 0;
@@ -375,14 +393,22 @@ export class SettingsPanel extends LitElement {
   @property({ type: Boolean }) extendedMarkerColor = false;
   @property({ type: Boolean }) extraExtendedMarkerColor = false;
   @property({ type: Boolean }) keepScreenOn = true;
+  @property({ type: Boolean }) onSelectMarkerGoToMarker = true;
   @property({ type: Boolean }) darkMode = false;
   @property({ type: Boolean }) bannerShow = false;
   @property({ type: Boolean }) preferVersion2 = false;
-  @property({ type: Boolean }) portrait = true;
   @property({ type: String }) theme = 'col1';
+  @property({ type: Boolean }) zoomShow = true;
+  @property({ type: Boolean }) playFullSongShow = true;
+  @property({ type: Boolean }) loopButtonsShow = true;
+  @property({ type: Boolean }) fullScreenCountdownShow = true;
 
   connectedCallback() {
     super.connectedCallback();
+    this.zoomShow = nDB.get(TROFF_SETTING_UI_ZOOM_SHOW) !== false;
+    this.playFullSongShow = nDB.get(TROFF_SETTING_UI_PLAY_FULL_SONG_BUTTONS_SHOW) !== false;
+    this.loopButtonsShow = nDB.get(TROFF_SETTING_UI_LOOP_BUTTONS_SHOW) !== false;
+    this.fullScreenCountdownShow = nDB.get(TROFF_SETTING_UI_FULL_SCREEN_COUNTDOWN) !== false;
     // Dynamic import for pwa to avoid requiring getInstallState etc in tests with minimal pwa mock (only initPwa)
     import('../../utils/pwa.js')
       .then(({ getInstallState, subscribeToInstallState }) => {
@@ -446,6 +472,10 @@ export class SettingsPanel extends LitElement {
     import('../../utils/pwa.js').then(({ promptInstall }) => promptInstall?.());
   }
 
+  private _handleReloadClick() {
+    import('../../utils/pwa.js').then(({ updatePWA }) => updatePWA?.());
+  }
+
   private _handleClose() {
     this.visible = false;
     this.dispatchEvent(
@@ -501,9 +531,6 @@ export class SettingsPanel extends LitElement {
     const nextValue = !currentValue;
 
     switch (setting) {
-      case 'playFullSong':
-        this.playFullSong = nextValue;
-        break;
       case 'extendedMarkerColor':
         this.extendedMarkerColor = nextValue;
         break;
@@ -519,8 +546,8 @@ export class SettingsPanel extends LitElement {
       case 'bannerShow':
         this.bannerShow = nextValue;
         break;
-      case 'portrait':
-        this.portrait = nextValue;
+      case 'onSelectMarkerGoToMarker':
+        this.onSelectMarkerGoToMarker = nextValue;
         break;
       default:
         return;
@@ -548,10 +575,13 @@ export class SettingsPanel extends LitElement {
     this._handleSettingChange('theme', theme);
   }
 
-  private _handleCurrentSongSettingChange(event: CustomEvent) {
-    const { setting, value } = event.detail;
-    // Forward the event from t-current-song-controls
-    this._handleSettingChange(setting, value);
+  private _setVisibilitySetting(key: string, value: boolean): void {
+    nDB.set(key, value);
+    window.dispatchEvent(
+      new CustomEvent<{ setting: string; value: boolean }>('troff-visibility-changed', {
+        detail: { setting: key, value },
+      })
+    );
   }
 
   render() {
@@ -561,7 +591,10 @@ export class SettingsPanel extends LitElement {
           <h2 class="panel-title">More</h2>
           <div style="display:flex; gap:8px; align-items:center;">
             ${this.installState === 'available'
-              ? html`<t-butt special @click=${this._handleInstallClick}>Install Troff</t-butt>`
+              ? html`<t-butt special @click=${this._handleInstallClick}>
+                <t-icon name="install"></t-icon>
+                Install Troff
+              </t-butt>`
               : ''}
             ${this.signedIn
               ? html`
@@ -580,13 +613,23 @@ export class SettingsPanel extends LitElement {
                         >Welcome to Troff, ${this.userName || 'Signed in'}</span
                       >
                       <span class="user-dropdown-name2">Happy training!</span>
-                      <t-butt @click=${this._handleSignInClick}>Sign out</t-butt>
+                      ${this.authBusy
+                        ? html`<span class="auth-busy"><t-loading></t-loading>Signing out…</span>`
+                        : html`<t-butt @click=${this._handleSignInClick}>
+                            <t-icon name="logout"></t-icon>
+                            <span style="padding-left: 4px;">Sign out</span>
+                          </t-butt>`}
                     </div>
                   </t-dropdown-button>
                 `
               : ''}
             ${!this.signedIn
-              ? html`<t-butt @click=${this._handleSignInClick}>Sign in</t-butt>`
+              ? this.authBusy
+                ? html`<span class="auth-busy"><t-loading></t-loading>Signing in…</span>`
+                : html`<t-butt @click=${this._handleSignInClick}>
+                    <t-icon name="login"></t-icon>
+                    <span style="padding-left: 4px;">Sign in</span>
+                  </t-butt>`
               : ''}
             <t-butt ghost class="close-button" @click=${this._handleClose}>
               <t-icon name="chevron-down"></t-icon>
@@ -600,7 +643,6 @@ export class SettingsPanel extends LitElement {
             id="settingsCurrentSongControls"
             no-keyboard
             .loopTimesValue=${this.loopTimesValue}
-            .playFullSong=${this.playFullSong}
             .startBeforeValue=${this.startBeforeValue}
             .startBeforeDisabled=${this.startBeforeDisabled}
             .stopAfterValue=${this.stopAfterValue}
@@ -608,7 +650,6 @@ export class SettingsPanel extends LitElement {
             .incrementUntillValue=${this.incrementUntillValue}
             .incrementUntillDisabled=${this.incrementUntillDisabled}
             .tempo=${this.tempo}
-            @setting-changed=${this._handleCurrentSongSettingChange}
           ></t-current-song-controls>
 
           <div class="global-settings">
@@ -684,6 +725,66 @@ export class SettingsPanel extends LitElement {
                 >
                   Dark mode
                 </t-butt>
+              </div>
+            </t-details>
+
+            <t-details title="Visibility" class="settings-width" text="Show or hide song controls.">
+              <div class="settings-section">
+                <div class="action-buttons">
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.zoomShow}
+                    @click=${() => {
+                      this.zoomShow = !this.zoomShow;
+                      this._setVisibilitySetting(TROFF_SETTING_UI_ZOOM_SHOW, this.zoomShow);
+                    }}
+                  >
+                    Zoom buttons
+                  </t-butt>
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.playFullSongShow}
+                    @click=${() => {
+                      this.playFullSongShow = !this.playFullSongShow;
+                      this._setVisibilitySetting(
+                        TROFF_SETTING_UI_PLAY_FULL_SONG_BUTTONS_SHOW,
+                        this.playFullSongShow
+                      );
+                    }}
+                  >
+                    Play full song button
+                  </t-butt>
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.loopButtonsShow}
+                    @click=${() => {
+                      this.loopButtonsShow = !this.loopButtonsShow;
+                      this._setVisibilitySetting(
+                        TROFF_SETTING_UI_LOOP_BUTTONS_SHOW,
+                        this.loopButtonsShow
+                      );
+                    }}
+                  >
+                    Loop count selector
+                  </t-butt>
+                  <t-butt
+                    toggle
+                    ellipsis
+                    .active=${this.fullScreenCountdownShow}
+                    @click=${() => {
+                      this.fullScreenCountdownShow = !this.fullScreenCountdownShow;
+                      this._setVisibilitySetting(
+                        TROFF_SETTING_UI_FULL_SCREEN_COUNTDOWN,
+                        this.fullScreenCountdownShow
+                      );
+                    }}
+                  >
+                    Full screen countdown
+                  </t-butt>
+                </div>
               </div>
             </t-details>
 
@@ -887,7 +988,16 @@ export class SettingsPanel extends LitElement {
               class="settings-width"
               text="Screen and version settings."
             >
-              <div class="settings-section">
+              <div class="settings-section" style="display: flex; flex-direction: column; gap: 8px;">
+                <t-butt
+                  toggle
+                  ellipsis
+                  .active=${this.onSelectMarkerGoToMarker}
+                  @click=${() =>
+                    this._toggleSetting('onSelectMarkerGoToMarker', this.onSelectMarkerGoToMarker)}
+                >
+                  Go to marker on select
+                </t-butt>
                 <t-butt
                   toggle
                   ellipsis
@@ -903,17 +1013,7 @@ export class SettingsPanel extends LitElement {
                 ${!this.keepScreenSupported
                   ? html`<span class="unsupported-note">(not supported on this browser)</span>`
                   : ''}
-                <div class="settings-section" style="margin: 0; margin-top: 8px;">
-                  <t-butt
-                    toggle
-                    ellipsis
-                    .active=${this.portrait}
-                    @click=${() => this._toggleSetting('portrait', this.portrait)}
-                  >
-                    Portrait
-                  </t-butt>
-                </div>
-                <div class="settings-section" style="margin: 0; margin-top: 8px;">
+                <div class="settings-section" style="margin: 0; display: flex; flex-direction: column; gap: 8px;">
                   <t-butt
                     toggle
                     ellipsis
@@ -923,7 +1023,10 @@ export class SettingsPanel extends LitElement {
                     Show dev banner
                   </t-butt>
                 </div>
-                <div class="settings-section" style="margin: 0; margin-top: 8px; display: flex; gap: 8px;">
+                <div
+                  class="settings-section"
+                  style="margin: 0; display: flex; gap: 8px;"
+                >
                   <t-butt
                     toggle
                     ellipsis
@@ -944,6 +1047,13 @@ export class SettingsPanel extends LitElement {
                     }}
                   >
                     Go back to version 1
+                  </t-butt>
+                </div>
+
+                <div class="settings-section settings-sub" style="margin: 0; display: flex; flex-direction: column; gap: 8px;">
+                  <t-butt ellipsis title="Restart Troff!" @click=${this._handleReloadClick}>
+                    <t-icon name="reload"></t-icon>
+                    Restart Troff
                   </t-butt>
                 </div>
 

@@ -1,5 +1,6 @@
 import './components/atom/t-butt.js';
 import './components/atom/t-icon.js';
+import './components/atom/t-loading.js';
 import './assets/external/jquery-3.6.0.min.js';
 import './components/molecule/t-footer.js';
 import './components/molecule/t-settings-panel.js';
@@ -16,9 +17,15 @@ import './components/molecule/t-import-export-dialog.js';
 import './components/molecule/t-marker-tools-dialog.js';
 import './components/molecule/t-share-song-dialog.js';
 import './components/molecule/t-text-input-dialog.js';
+import './components/molecule/t-zoom-info-dialog.js';
+import type { ZoomInfoDialog } from './components/molecule/t-zoom-info-dialog.js';
+import './components/molecule/t-v2-welcome-dialog.js';
+import type { V2WelcomeDialog } from './components/molecule/t-v2-welcome-dialog.js';
+import { ZOOM_INFO_DONT_SHOW_KEY, isZoomNoop, shouldShowZoomInfo } from './utils/zoom-info.js';
+import './components/molecule/t-import-dialog.js';
+import type { ImportDialog } from './components/molecule/t-import-dialog.js';
 import './components/organisms/t-marker-slider.js';
 import './components/organisms/t-video-player.js';
-import type { TVideoPlayer } from './components/organisms/t-video-player.js';
 import {
   updateHeaderWithCurrentSong,
   setCurrentSong,
@@ -47,6 +54,7 @@ import {
   getIncrementUntil,
   ensureDefaultMarkers,
 } from './utils/troff-settings.js';
+import { extractAlbumArt } from './utils/album-art.js';
 import { calculateIncrementUntilSpeed } from './utils/increment-until.js';
 import type {
   TroffMarker,
@@ -73,15 +81,15 @@ import {
   TROFF_SETTING_EXTENDED_MARKER_COLOR,
   TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
   TROFF_SETTING_KEEP_SCREEN_ON,
+  TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER,
   TROFF_SETTING_DARK_MODE,
   TROFF_SETTING_THEME,
   TROFF_SETTING_BANNER_SHOW,
-  TROFF_SETTING_PORTRAIT,
   TROFF_SETTING_PREFER_VERSION,
   TROFF_TROFF_DATA_ID_AND_FILE_NAME,
 } from './constants/constants.js';
 import log from './utils/log.js';
-import { showToast } from './utils/notification.js';
+import { showToast, showLoading } from './utils/notification.js';
 import { initPwa } from './utils/pwa.js';
 import { syncFirebaseGroups } from './utils/firebase-sync.js';
 import { toSongKey } from './utils/utils.js';
@@ -103,9 +111,9 @@ import { getManifest } from './utils/manifestHelper.js';
 import { updateWakeLockForPlayback } from './utils/phoneUtils.js';
 
 // Arrow key time increments (matching v1)
-export const ALT_TIME = 1 / 12;       // one frame at 12fps
-export const REGULAR_TIME = 10 / 12;  // 10 frames
-export const SHIFT_TIME = 100 / 12;   // 100 frames
+export const ALT_TIME = 1 / 12; // one frame at 12fps
+export const REGULAR_TIME = 10 / 12; // 10 frames
+export const SHIFT_TIME = 100 / 12; // 100 frames
 
 // Hostname→Sentry environment mapping — mirrors utils/firebase-getter.ts
 // (which itself mirrors the legacy assets/internal/environment.ts selection).
@@ -347,6 +355,15 @@ const setUrlToSong = (serverId: string | number | undefined, songKey: string | n
   window.location.hash = '#' + String(serverId) + '&' + encodeURIComponent(songKey);
 };
 
+const saveSharedSongData = (songKey: string): Promise<void> => {
+  const p = saveSongData(songKey);
+  if (songKey) {
+    nDB.setOnSong(songKey, 'serverId', undefined);
+  }
+  setUrlToSong(undefined, null);
+  return p;
+};
+
 // --- Editable-element guard (module scope, usable by any handler) ---
 const isEditableHostElement = (element: HTMLElement): boolean => {
   const tagName = element.tagName.toLowerCase();
@@ -391,10 +408,7 @@ const isEditableKeyEvent = (event: KeyboardEvent) => {
     if (shadowActiveElement instanceof HTMLElement && shadowActiveElement.isContentEditable) {
       return true;
     }
-    if (
-      shadowActiveElement instanceof HTMLElement &&
-      isEditableHostElement(shadowActiveElement)
-    ) {
+    if (shadowActiveElement instanceof HTMLElement && isEditableHostElement(shadowActiveElement)) {
       return true;
     }
   }
@@ -426,19 +440,12 @@ const handleArrowKeyDown = (event: KeyboardEvent) => {
     event.preventDefault();
     event.stopPropagation();
 
-    const increment = event.shiftKey
-      ? SHIFT_TIME
-      : event.altKey
-        ? ALT_TIME
-        : REGULAR_TIME;
+    const increment = event.shiftKey ? SHIFT_TIME : event.altKey ? ALT_TIME : REGULAR_TIME;
 
     const media = getActiveMedia();
     const direction = event.key === 'ArrowRight' ? 1 : -1;
     const duration = media.duration || 0;
-    media.currentTime = Math.min(
-      duration,
-      Math.max(0, media.currentTime + direction * increment)
-    );
+    media.currentTime = Math.min(duration, Math.max(0, media.currentTime + direction * increment));
     return;
   }
 
@@ -451,11 +458,8 @@ const handleArrowKeyDown = (event: KeyboardEvent) => {
   event.preventDefault();
   event.stopPropagation();
 
-  const increment = event.shiftKey && event.altKey
-    ? SHIFT_TIME
-    : event.shiftKey
-      ? REGULAR_TIME
-      : ALT_TIME;
+  const increment =
+    event.shiftKey && event.altKey ? SHIFT_TIME : event.shiftKey ? REGULAR_TIME : ALT_TIME;
 
   const markerSlider = document.getElementById('markerSlider') as MarkerSlider | null;
   if (!markerSlider?.startMarkerId) {
@@ -500,8 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let storageErrorToastShown = false;
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason;
-    const message =
-      reason instanceof Error ? reason.message : String(reason ?? '');
+    const message = reason instanceof Error ? reason.message : String(reason ?? '');
     if (
       message.includes('Connection to Indexed Database server lost') ||
       message.includes('IndexedDB server lost')
@@ -518,6 +521,33 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
+
+  // v2 default rollout welcome (placed right after settingsPanel setup per spec, inside listener; parent controls .open)
+  const pref = nDB.get(TROFF_SETTING_PREFER_VERSION);
+  if (pref == null) {
+    if (nDB.get('millisFirstTimeStartingApp') != null) {
+      const dlg = document.getElementById('v2WelcomeDialog') as V2WelcomeDialog | null;
+      if (dlg) {
+        dlg.open = true;
+      }
+      // attach listeners for the events the dialog dispatches ('v2-welcome-continue', 'v2-welcome-switch-back' or 'dialog-cancelled')
+      // on continue/close: nDB.set(TROFF_SETTING_PREFER_VERSION, 2)
+      // on switch-back: nDB.set(..., 1); location = '/v1.html' + ...
+      const onContinueOrClose = () => {
+        nDB.set(TROFF_SETTING_PREFER_VERSION, 2);
+      };
+      const onBack = () => {
+        nDB.set(TROFF_SETTING_PREFER_VERSION, 1);
+        window.location.replace('/v1.html' + (window.location.hash || ''));
+      };
+      if (dlg) {
+        dlg.addEventListener('v2-welcome-continue', onContinueOrClose, { once: true });
+        dlg.addEventListener('dialog-cancelled', onContinueOrClose, { once: true });
+        dlg.addEventListener('v2-welcome-switch-back', onBack, { once: true });
+      }
+    }
+    // no else, no set for new users
+  }
 
   // Sentry observability — mirrors script.ts initEnvironment without legacy
   // imports. Tag every event with app: 'v2' unconditionally, then set env,
@@ -537,7 +567,8 @@ document.addEventListener('DOMContentLoaded', () => {
         header.versionNumber = manifest.version;
         header.bannerText = getBannerText();
         const storedBannerShow = nDB.get(TROFF_SETTING_BANNER_SHOW);
-        header.showBanner = storedBannerShow !== null ? storedBannerShow === true : getBannerDefault();
+        header.showBanner =
+          storedBannerShow !== null ? storedBannerShow === true : getBannerDefault();
       }
     })
     .catch((error) => {
@@ -568,6 +599,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const loadSongIntoPlayer = async (songKey: string) => {
     const result = await loadSong(songKey);
     if (!result) return;
+    // Recover album art from the cached file's ID3 tags — no-op when the art
+    // is already present or the nDB entry does not exist yet.
+    void extractAlbumArt(songKey);
     if (result.isVideo) {
       activeMedia = videoElement ?? audio;
       if (videoElement) {
@@ -606,9 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const getVersionInfo = (songKey: string): { numberOfVersions: number; findUrl: string } => {
     const fileNameUri = encodeURI(songKey);
-    const dbHistory: TroffHistoryList[] | null = nDB.get(
-      TROFF_TROFF_DATA_ID_AND_FILE_NAME
-    );
+    const dbHistory: TroffHistoryList[] | null = nDB.get(TROFF_TROFF_DATA_ID_AND_FILE_NAME);
     if (dbHistory == null) {
       return { numberOfVersions: 0, findUrl: '' };
     }
@@ -622,10 +654,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return { numberOfVersions: 0, findUrl: '' };
     }
 
-    if (
-      hist[0].troffDataIdObjectList.length === 1 &&
-      nDB.get(songKey)?.serverId !== undefined
-    ) {
+    if (hist[0].troffDataIdObjectList.length === 1 && nDB.get(songKey)?.serverId !== undefined) {
       return { numberOfVersions: 0, findUrl: '' };
     }
 
@@ -756,6 +785,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const zoomToPlayableRegion = async () => {
     if (!markerSlider) {
       return;
+    }
+
+    // Detect the no-op case (already zoomed to the active playing region) and
+    // show the zoom-info dialog, mirroring v1 `zoomToMarker()`. Compare the
+    // UNPADDED normalized playback window against the saved window with a
+    // 0.5s tolerance to cover marker padding and float rounding.
+    const duration = getTimelineDuration();
+    const target = normalizeZoomWindow(
+      markerSlider.getPlaybackStart(),
+      markerSlider.getPlaybackStop(),
+      duration
+    );
+    const songKey = getCurrentSongKey();
+    const songData = songKey ? nDB.get(songKey) || {} : {};
+    const saved = normalizeZoomWindow(
+      withSafeNumber(songData.zoomStartTime, 0),
+      withSafeNumber(songData.zoomEndTime, duration),
+      duration
+    );
+    if (shouldShowZoomInfo(isZoomNoop(saved, target, 0.5), nDB.get(ZOOM_INFO_DONT_SHOW_KEY))) {
+      const zoomInfoDialog = document.getElementById('zoomInfoDialog') as ZoomInfoDialog | null;
+      if (zoomInfoDialog) {
+        zoomInfoDialog.open = true;
+      }
     }
 
     await applyMarkerSliderZoom(
@@ -944,7 +997,7 @@ document.addEventListener('DOMContentLoaded', () => {
         syncCurrentSongControlsValues();
 
         // Save to Firebase if applicable
-        await saveSongData(songKey);
+        await saveSharedSongData(songKey);
       } catch (error) {
         log.e('Import failed:', error);
         alert('Import failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -1150,7 +1203,7 @@ document.addEventListener('DOMContentLoaded', () => {
       syncCurrentSongControlsValues();
 
       // Save to Firebase if applicable
-      void saveSongData(songKey);
+      void saveSharedSongData(songKey);
     } catch (error) {
       log.e('Marker tools action failed:', error);
     }
@@ -1197,8 +1250,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const mainLayout = document.querySelector('t-main-layout') as HTMLElement | null;
-    const mainContent = mainLayout?.shadowRoot?.querySelector('.main-content') as HTMLElement | null;
-    const sliderContainer = markerSlider.shadowRoot?.querySelector('.slider-container') as HTMLElement | null;
+    const mainContent = mainLayout?.shadowRoot?.querySelector(
+      '.main-content'
+    ) as HTMLElement | null;
+    const sliderContainer = markerSlider.shadowRoot?.querySelector(
+      '.slider-container'
+    ) as HTMLElement | null;
 
     if (!mainContent || !sliderContainer) {
       persistZoomWindow(0, duration);
@@ -1357,9 +1414,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const pauseBeforeSeconds =
-      footer && !footer.disablePauseBefore
-        ? Math.max(0, footer.pauseBefore ?? 0)
-        : 0;
+      footer && !footer.disablePauseBefore ? Math.max(0, footer.pauseBefore ?? 0) : 0;
     header.statusCountdown = `${pauseBeforeSeconds}s`;
   };
 
@@ -1373,7 +1428,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const states = songKey && songData && Array.isArray(songData.aStates) ? songData.aStates : [];
     type SongStatesHost = HTMLElement & { songStates?: string[] };
     if (currentSongControls) (currentSongControls as SongStatesHost).songStates = states;
-    const settingsCtl = settingsPanel?.shadowRoot?.querySelector('#settingsCurrentSongControls') as SongStatesHost | null;
+    const settingsCtl = settingsPanel?.shadowRoot?.querySelector(
+      '#settingsCurrentSongControls'
+    ) as SongStatesHost | null;
     if (settingsCtl) settingsCtl.songStates = states;
     const rawLoopTimes =
       songData?.loopTimes !== undefined ? songData.loopTimes : getDefaultLoopTimesValue();
@@ -1421,6 +1478,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     settingsPanel.keepScreenOn = nDB.get(TROFF_SETTING_KEEP_SCREEN_ON) ?? true;
+    settingsPanel.onSelectMarkerGoToMarker =
+      nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
     void updateWakeLockForPlayback(false, false);
     settingsPanel.darkMode = nDB.get(TROFF_SETTING_DARK_MODE) ?? false;
     settingsPanel.theme = nDB.get(TROFF_SETTING_THEME) ?? 'col1';
@@ -1428,10 +1487,6 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsPanel.bannerShow =
       storedBannerShow !== null ? storedBannerShow === true : getBannerDefault();
     settingsPanel.preferVersion2 = nDB.get(TROFF_SETTING_PREFER_VERSION) === 2;
-    settingsPanel.portrait = nDB.get(TROFF_SETTING_PORTRAIT) ?? true;
-    if (videoPlayer) {
-      (videoPlayer as { portrait?: boolean }).portrait = nDB.get(TROFF_SETTING_PORTRAIT) ?? true;
-    }
     const extendedColorSetting = nDB.get(TROFF_SETTING_EXTENDED_MARKER_COLOR);
     const extraExtendedColorSetting = nDB.get(TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR);
     settingsPanel.extendedMarkerColor = extendedColorSetting === true;
@@ -1652,7 +1707,7 @@ document.addEventListener('DOMContentLoaded', () => {
       footer.isStartingPlayback = true;
       footer.playbackCountdown = countdownSeconds;
     }
-    void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+    void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
 
     if (header) {
       header.statusCountdown = `${countdownSeconds}s`;
@@ -1669,7 +1724,7 @@ document.addEventListener('DOMContentLoaded', () => {
       footer.isStartingPlayback = false;
       footer.playbackCountdown = 0;
     }
-    void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+    void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
 
     updateHeaderCountdownDisplay();
   };
@@ -1740,7 +1795,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const startPlayback = () => {
-    void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+    void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
     if (pendingPlaybackStart !== undefined) {
       resetLoopTimesCounter();
       clearPendingPlaybackStart();
@@ -1851,25 +1906,35 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         const state: State = {
           name,
-          currentMarker: markerSlider ? markerSlider.startMarkerId : (songData.currentStartMarker || ''),
-          currentStopMarker: markerSlider ? markerSlider.stopMarkerId : (songData.currentStopMarker || ''),
+          currentMarker: markerSlider
+            ? markerSlider.startMarkerId
+            : songData.currentStartMarker || '',
+          currentStopMarker: markerSlider
+            ? markerSlider.stopMarkerId
+            : songData.currentStopMarker || '',
           currentLoop: songData.loopTimes !== undefined ? songData.loopTimes : '1',
           buttPauseBefStart: songData.TROFF_CLASS_TO_TOGGLE_buttPauseBefStart !== false,
           buttStartBefore: songData.TROFF_CLASS_TO_TOGGLE_buttStartBefore !== false,
           buttStopAfter: songData.TROFF_CLASS_TO_TOGGLE_buttStopAfter !== false,
           buttWaitBetweenLoops: songData.TROFF_CLASS_TO_TOGGLE_buttWaitBetweenLoops !== false,
           buttIncrementUntil: songData.TROFF_CLASS_TO_TOGGLE_buttIncrementUntil === true,
-          pauseBeforeStart: parseNum(songData.TROFF_VALUE_pauseBeforeStart, parseNum(footer?.pauseBefore, 3)),
+          pauseBeforeStart: parseNum(
+            songData.TROFF_VALUE_pauseBeforeStart,
+            parseNum(footer?.pauseBefore, 3)
+          ),
           speedBar: parseNum(songData.TROFF_VALUE_speedBar, parseNum(footer?.speed, 100)),
           startBefore: parseNum(songData.TROFF_VALUE_startBefore, 0),
           stopAfter: parseNum(songData.TROFF_VALUE_stopAfter, 0),
           volumeBar: parseNum(songData.TROFF_VALUE_volumeBar, parseNum(footer?.volume, 75)),
-          waitBetweenLoops: parseNum(songData.TROFF_VALUE_waitBetweenLoops, parseNum(footer?.waitBetween, 1)),
+          waitBetweenLoops: parseNum(
+            songData.TROFF_VALUE_waitBetweenLoops,
+            parseNum(footer?.waitBetween, 1)
+          ),
         };
         const aStates: string[] = existingStates.slice();
         aStates.push(JSON.stringify(state));
         nDB.setOnSong(songKey, 'aStates', aStates);
-        void saveSongData(songKey);
+        void saveSharedSongData(songKey);
         syncSettingsPanelValues();
         syncCurrentSongControlsValues();
         // Deliberately do NOT touch the marker slider here.
@@ -1896,7 +1961,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const songData: Record<string, unknown> = nDB.get(songKey) || {};
-    const aStates: string[] = Array.isArray(songData.aStates) ? (songData.aStates as string[]).slice() : [];
+    const aStates: string[] = Array.isArray(songData.aStates)
+      ? (songData.aStates as string[]).slice()
+      : [];
     if (index < 0 || index >= aStates.length) {
       return;
     }
@@ -1906,8 +1973,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {
       return;
     }
-    songData.currentStartMarker = state.currentMarker || (songData.currentStartMarker as string) || '';
-    songData.currentStopMarker = state.currentStopMarker || (songData.currentStopMarker as string) || '';
+    songData.currentStartMarker =
+      state.currentMarker || (songData.currentStartMarker as string) || '';
+    songData.currentStopMarker =
+      state.currentStopMarker || (songData.currentStopMarker as string) || '';
     if (state.currentLoop !== undefined) {
       songData.loopTimes = state.currentLoop;
     }
@@ -1956,7 +2025,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const songData = nDB.get(songKey) || {};
-    const aStates: string[] = Array.isArray(songData.aStates) ? (songData.aStates as string[]).slice() : [];
+    const aStates: string[] = Array.isArray(songData.aStates)
+      ? (songData.aStates as string[]).slice()
+      : [];
     if (index < 0 || index >= aStates.length) {
       return;
     }
@@ -1993,10 +2064,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (setting === 'playFullSong') {
         selectFirstAndLastMarkers(true);
-        settingsPanel.playFullSong = false;
-        if (currentSongControls) {
-          currentSongControls.playFullSong = false;
-        }
         return;
       }
 
@@ -2083,7 +2150,7 @@ document.addEventListener('DOMContentLoaded', () => {
           clearTimeout(existing);
         }
         const timer = setTimeout(() => {
-          void saveSongData(songKey);
+          void saveSharedSongData(songKey);
           tempoSaveTimers.delete(songKey);
         }, 900);
         tempoSaveTimers.set(songKey, timer);
@@ -2182,10 +2249,10 @@ document.addEventListener('DOMContentLoaded', () => {
         extendedMarkerColor: TROFF_SETTING_EXTENDED_MARKER_COLOR,
         extraExtendedMarkerColor: TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
         keepScreenOn: TROFF_SETTING_KEEP_SCREEN_ON,
+        onSelectMarkerGoToMarker: TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER,
         darkMode: TROFF_SETTING_DARK_MODE,
         theme: TROFF_SETTING_THEME,
         bannerShow: TROFF_SETTING_BANNER_SHOW,
-        portrait: TROFF_SETTING_PORTRAIT,
       };
 
       const storageKey = settingsKeyByPanelSetting[setting];
@@ -2195,7 +2262,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       nDB.set(storageKey, value === true ? true : value);
       if (setting === 'keepScreenOn') {
-        void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+        void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
       }
       if (setting === 'darkMode') {
         if (value === true) {
@@ -2209,12 +2276,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (setting === 'bannerShow') {
         header.showBanner = value === true;
-      }
-      if (setting === 'portrait') {
-        const videoPlayerEl = document.getElementById('videoPlayer') as TVideoPlayer | null;
-        if (videoPlayerEl) {
-          videoPlayerEl.portrait = value === true;
-        }
       }
       syncSettingsPanelValues();
       syncCurrentSongControlsValues();
@@ -2246,7 +2307,7 @@ document.addEventListener('DOMContentLoaded', () => {
         removeState(stateIndex);
         const songKey = getCurrentSongKey();
         if (songKey) {
-          void saveSongData(songKey);
+          void saveSharedSongData(songKey);
         }
         return;
       }
@@ -2301,6 +2362,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const customEvent = event as CustomEvent<{ action: string }>;
       const action = customEvent.detail?.action;
 
+      // Re-entry guard: ignore a second request while one is still pending
+      if (settingsPanel?.authBusy) {
+        return;
+      }
+
+      if (settingsPanel) {
+        settingsPanel.authBusy = true;
+      }
+      if (songList) {
+        songList.authBusy = true;
+      }
+      const signInGroupDialog = document.querySelector('t-group-dialog') as unknown as {
+        authBusy: boolean;
+      } | null;
+      if (signInGroupDialog) {
+        signInGroupDialog.authBusy = true;
+      }
+
       try {
         // Ensure notify.js is loaded so cookie_consent doesn't enter an infinite retry loop
         await import('./assets/internal/notify-js/notify.config.js');
@@ -2316,9 +2395,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } catch (error) {
         log.e('Auth error:', error);
+        const code = (error as { code?: string } | null)?.code;
+        if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+          showToast('Sign-in cancelled', 'info');
+        }
+      } finally {
+        if (settingsPanel) {
+          settingsPanel.authBusy = false;
+        }
+        if (songList) {
+          songList.authBusy = false;
+        }
+        const doneGroupDialog = document.querySelector('t-group-dialog') as unknown as {
+          authBusy: boolean;
+        } | null;
+        if (doneGroupDialog) {
+          doneGroupDialog.authBusy = false;
+        }
       }
     };
 
+    // Element-scoped so the listeners die with their elements on re-boot
+    // (a document-level listener would accumulate stale handlers whose
+    // re-entry guard closes over detached elements). Events from the lazily
+    // created group dialog are forwarded via settingsPanel (see
+    // ensureGroupDialog); the dialog stays open and onAuthStateChanged syncs
+    // its signedIn state.
     settingsPanel.addEventListener('sign-in-requested', handleSignInRequest);
     songList?.addEventListener('sign-in-requested', handleSignInRequest);
   }
@@ -2365,10 +2467,39 @@ document.addEventListener('DOMContentLoaded', () => {
             // Set up real-time listeners for Firebase song changes
             await setupListeners();
             await setupGroupSongListeners();
-            setLiveUpdateCallback((songKey: string) => {
-              // If the updated song is currently selected, refresh UI without interrupting playback
-              refreshCurrentSongUI(songKey);
-            });
+            setLiveUpdateCallback(
+              async (
+                songKey: string,
+                _remoteData: Record<string, unknown>,
+                metadataChanged: boolean
+              ) => {
+                // The caller discards this promise, so catch here to avoid an
+                // unhandled rejection escaping the invocation's try/catch.
+                try {
+                  // If the updated song is currently selected, refresh UI without interrupting playback
+                  refreshCurrentSongUI(songKey);
+
+                  if (!metadataChanged) return;
+
+                  // Shared metadata (info / fileData) changed remotely: refresh the
+                  // header/footer titles when the changed song is the open one, and
+                  // always reload the track list so other songs' metadata updates show.
+                  const currentKey = getCurrentSongKey();
+                  const isCurrentSong =
+                    !!currentKey && (!songKey || toSongKey(currentKey) === toSongKey(songKey));
+                  if (isCurrentSong) {
+                    updateHeaderWithCurrentSong();
+                    updateFooterWithCurrentSong();
+                  }
+
+                  if (songList && typeof songList.reloadSongs === 'function') {
+                    await songList.reloadSongs();
+                  }
+                } catch (error) {
+                  log.e('setLiveUpdateCallback handler failed:', error);
+                }
+              }
+            );
             setGroupUpdateCallback(() => {
               // Refresh the group song list when a group's songs change remotely
               if (songList && typeof (songList as any).reloadSongs === 'function') {
@@ -2396,8 +2527,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // This ensures both the UI and the behaviour start with the correct values.
     const defaultsIfUnset: [string, boolean][] = [
       [TROFF_SETTING_KEEP_SCREEN_ON, true],
+      [TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER, true],
       [TROFF_SETTING_DARK_MODE, false],
-      [TROFF_SETTING_PORTRAIT, true],
     ];
     for (const [key, defaultValue] of defaultsIfUnset) {
       if (nDB.get(key) == null) {
@@ -2501,11 +2632,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const songKey = getCurrentSongKey();
       if (songKey) {
         nDB.setOnSong(songKey, 'TROFF_VALUE_incrementUntilValue', event.detail.value);
-        nDB.setOnSong(
-          songKey,
-          'TROFF_CLASS_TO_TOGGLE_buttIncrementUntil',
-          !event.detail.disabled
-        );
+        nDB.setOnSong(songKey, 'TROFF_CLASS_TO_TOGGLE_buttIncrementUntil', !event.detail.disabled);
       }
       syncSettingsPanelValues();
       syncCurrentSongControlsValues();
@@ -2530,15 +2657,8 @@ document.addEventListener('DOMContentLoaded', () => {
           return timeA - timeB;
         });
         nDB.setOnSong(songKey, 'markers', mergedMarkers);
-        void saveSongData(songKey);
+        void saveSharedSongData(songKey);
       }
-
-      // When markers are modified, the URL hash is no longer valid for sharing
-      // Also clear the serverId so a future hash link shows the import dialog
-      if (songKey) {
-        nDB.setOnSong(songKey, 'serverId', undefined);
-      }
-      setUrlToSong(undefined, null);
 
       // Update the marker slider UI
       updateMarkerSlider(markerSlider, false);
@@ -2595,12 +2715,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (markerSlider) {
           markerSlider.value = time;
 
-          if (
-            markerSlider.markers.length > 0 &&
-            time > markerSlider.getPlaybackStop()
-          ) {
-            const lastMarker =
-              markerSlider.markers[markerSlider.markers.length - 1];
+          if (markerSlider.markers.length > 0 && time > markerSlider.getPlaybackStop()) {
+            const lastMarker = markerSlider.markers[markerSlider.markers.length - 1];
             markerSlider.stopMarkerId = lastMarker.id + 'S';
 
             const songKey = getCurrentSongKey();
@@ -2642,15 +2758,8 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           nDB.setOnSong(songKey, 'markers', mergedMarkers);
         }
-        void saveSongData(songKey);
+        void saveSharedSongData(songKey);
       }
-
-      // When markers are modified, the URL hash is no longer valid for sharing
-      // Also clear the serverId so a future hash link shows the import dialog
-      if (songKey) {
-        nDB.setOnSong(songKey, 'serverId', undefined);
-      }
-      setUrlToSong(undefined, null);
 
       // Update the marker slider UI
       updateMarkerSlider(markerSlider, false);
@@ -2667,15 +2776,8 @@ document.addEventListener('DOMContentLoaded', () => {
           (m: TroffMarker) => m.id !== customEvent.detail.markerId
         );
         nDB.setOnSong(songKey, 'markers', updatedMarkers);
-        void saveSongData(songKey);
+        void saveSharedSongData(songKey);
       }
-
-      // When markers are modified, the URL hash is no longer valid for sharing
-      // Also clear the serverId so a future hash link shows the import dialog
-      if (songKey) {
-        nDB.setOnSong(songKey, 'serverId', undefined);
-      }
-      setUrlToSong(undefined, null);
 
       // Update the marker slider UI
       updateMarkerSlider(markerSlider, false);
@@ -2853,11 +2955,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!settingsPanel.incrementUntillDisabled) {
           const targetSpeed = Number(settingsPanel.incrementUntillValue) || 0;
           const currentSpeed = getActiveMedia().playbackRate * 100;
-          const newSpeed = calculateIncrementUntilSpeed(
-            currentSpeed,
-            targetSpeed,
-            loopTimesLeft
-          );
+          const newSpeed = calculateIncrementUntilSpeed(currentSpeed, targetSpeed, loopTimesLeft);
           getActiveMedia().playbackRate = newSpeed / 100;
           if (videoElement) {
             videoElement.playbackRate = newSpeed / 100;
@@ -2889,7 +2987,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (footer) {
         footer.isPlaying = true;
       }
-      void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+      void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
       updateHeaderCountdownDisplay();
     };
     const onPause = () => {
@@ -2903,7 +3001,7 @@ document.addEventListener('DOMContentLoaded', () => {
         footer.isPlaying = false;
       }
       if (!wasLoopTransition) {
-        void updateWakeLockForPlayback(!!footer?.isPlaying , !!footer?.isStartingPlayback );
+        void updateWakeLockForPlayback(!!footer?.isPlaying, !!footer?.isStartingPlayback);
       }
       updateHeaderCountdownDisplay();
     };
@@ -2952,7 +3050,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentSongData) {
           currentSongData.currentStartMarker = markerId;
           nDB.set(songKey, currentSongData);
-          updateMarkerSlider(markerSlider);
+          const goToMarker: boolean =
+            nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
+          updateMarkerSlider(markerSlider, goToMarker);
         }
       }
     });
@@ -2989,7 +3089,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const mainLayout = document.querySelector('t-main-layout') as HTMLElement | null;
-    const mainContent = mainLayout?.shadowRoot?.querySelector('.main-content') as HTMLElement | null;
+    const mainContent = mainLayout?.shadowRoot?.querySelector(
+      '.main-content'
+    ) as HTMLElement | null;
     if (!mainContent) {
       // Try once more shortly after first paint (custom elements may upgrade late)
       setTimeout(setupScrollPersistence, 50);
@@ -3020,6 +3122,14 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   setupScrollPersistence();
 
+  // Persist the zoom-info "Don't show again" suppression flag (v1 compatible).
+  document.addEventListener('zoom-info-closed', (event: Event) => {
+    const detail = (event as CustomEvent<{ dontShowAgain?: boolean }>).detail;
+    if (detail?.dontShowAgain) {
+      nDB.set(ZOOM_INFO_DONT_SHOW_KEY, true);
+    }
+  });
+
   // -------- Helper: load/select a song (shared by hash download and dialog actions) --------
   const selectSongFromHash = async (fileName: string) => {
     if (songList && typeof songList.reloadSongs === 'function') {
@@ -3049,92 +3159,188 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // -------- Import dialog for songs that already exist locally --------
-  let importDialogOverlay: HTMLDivElement | null = null;
+  // -------- Import dialog for songs that already exist locally (V2) --------
+  let importDialog: ImportDialog | null = null;
 
-  const destroyImportDialog = () => {
-    if (importDialogOverlay) {
-      importDialogOverlay.remove();
-      importDialogOverlay = null;
+  // Prefetch state: the server fetch starts when the dialog opens, so
+  // import/merge apply instantly if it already settled, or show loading only
+  // while still in flight. Errors stay deferred until the user picks an
+  // action. `keep` discards the prefetch so a late settlement never surfaces.
+  type PrefetchedServerData =
+    | {
+        ok: true;
+        data: {
+          markers: TroffMarker[];
+          states: string[];
+          info: string;
+          serverId: number;
+          fileUrl: string;
+          duration: number;
+        };
+      }
+    | { ok: false; message: string; useAlert: boolean };
+  let importPrefetchPromise: Promise<PrefetchedServerData> | null = null;
+  let importPrefetchSettled = false;
+  let importPrefetchResult: PrefetchedServerData | null = null;
+  let importPrefetchDiscarded = false;
+
+  const openImportDialog = (fileName: string, hashServerId: number) => {
+    if (!importDialog) {
+      importDialog = document.createElement('t-import-dialog');
+      document.body.append(importDialog);
     }
+
+    importDialog.fileName = fileName;
+    importDialog.open = true;
+
+    // Start the prefetch immediately (once per dialog open).
+    importPrefetchDiscarded = false;
+    importPrefetchSettled = false;
+    importPrefetchResult = null;
+    importPrefetchPromise = null;
+    void import('./utils/hash-download.js')
+      .then((mod) => {
+        const fetchResult = (
+          mod as unknown as {
+            fetchServerTroffDataResult?: (
+              serverId: number,
+              fileName: string
+            ) => Promise<PrefetchedServerData>;
+          }
+        ).fetchServerTroffDataResult;
+        if (typeof fetchResult !== 'function') return;
+        try {
+          const p = fetchResult(hashServerId, fileName);
+          if (!p || typeof p.then !== 'function') return;
+          importPrefetchPromise = p;
+          p.then(
+            (r) => {
+              if (importPrefetchDiscarded) return;
+              importPrefetchSettled = true;
+              importPrefetchResult = r;
+            },
+            (e: unknown) => {
+              if (importPrefetchDiscarded) return;
+              importPrefetchSettled = true;
+              importPrefetchResult = {
+                ok: false,
+                useAlert: true,
+                message:
+                  e instanceof Error
+                    ? e.message
+                    : 'Could not fetch the song data from the server due to a network error.',
+              };
+            }
+          );
+          p.catch(() => {
+            // Handled via the then() above; avoid unhandled rejection noise.
+          });
+        } catch {
+          // No prefetch; handlers fall back to the legacy fetch below.
+        }
+      })
+      .catch(() => {
+        // No prefetch; handlers fall back to the legacy fetch below.
+      });
+
+    const handleAction = (event: Event) => {
+      const { action } = (event as CustomEvent).detail as { action: 'import' | 'merge' | 'keep' };
+      if (action === 'import') {
+        void handleImportNewMarkers(fileName, hashServerId);
+      } else if (action === 'merge') {
+        void handleMergeMarkers(fileName, hashServerId);
+      } else {
+        void handleKeepExistingMarkers(fileName);
+      }
+    };
+
+    importDialog.addEventListener('import-action-selected', handleAction, { once: true });
   };
 
-  const createImportDialog = (fileName: string, hashServerId: number) => {
-    destroyImportDialog();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'import-dialog-overlay';
-    overlay.style.cssText = `
-      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.6); z-index: 10000;
-      display: flex; align-items: center; justify-content: center;
-    `;
-
-    const box = document.createElement('div');
-    box.className = 'import-dialog-box';
-    box.style.cssText = `
-      background: var(--on-theme-color, #fff); color: var(--theme-color, #000);
-      padding: 24px; border-radius: 8px; max-width: 400px; width: 90%;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-      display: flex; flex-direction: column; gap: 16px;
-    `;
-
-    const title = document.createElement('h2');
-    title.textContent = 'Update markers?';
-    title.style.cssText = 'margin: 0; font-size: 1.2em;';
-
-    const message = document.createElement('p');
-    message.style.cssText = 'margin: 0; line-height: 1.5;';
-    message.textContent = `You seem to already have the song "${fileName}". Do you want to update that song with the new markers or merge them or abort?`;
-
-    const buttonRow = document.createElement('div');
-    buttonRow.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-
-    const btnImport = document.createElement('button');
-    btnImport.textContent = 'Import new markers';
-    btnImport.className = 'regularButton';
-    btnImport.onclick = () => {
-      destroyImportDialog();
-      handleImportNewMarkers(fileName, hashServerId);
+  /**
+   * Resolve the server data for import/merge, preferring the dialog-open
+   * prefetch: settled → apply instantly with no loading; pending → show
+   * loading until it settles; failed → surface at click time (toast/alert).
+   * Falls back to the legacy fetch when no prefetch exists (e.g. the quiet
+   * fetch is unavailable).
+   */
+  const getImportServerData = async (
+    fileName: string,
+    hashServerId: number
+  ): Promise<
+    PrefetchedServerData extends never
+      ? never
+      : Extract<PrefetchedServerData, { ok: true }>['data'] | null
+  > => {
+    const surfaceError = async (result: Extract<PrefetchedServerData, { ok: false }>) => {
+      const { showToast } = await import('./utils/notification.js');
+      if (result.useAlert) {
+        alert(result.message);
+      } else {
+        showToast(result.message, 'error', 5000);
+      }
     };
 
-    const btnMerge = document.createElement('button');
-    btnMerge.textContent = 'Merge with existing markers';
-    btnMerge.className = 'regularButton';
-    btnMerge.onclick = () => {
-      destroyImportDialog();
-      handleMergeMarkers(fileName, hashServerId);
-    };
+    // Already settled before the click → no loading UI.
+    if (importPrefetchSettled && importPrefetchResult) {
+      const settled = importPrefetchResult;
+      importPrefetchPromise = null;
+      if (!settled.ok) {
+        await surfaceError(settled);
+        return null;
+      }
+      return settled.data;
+    }
 
-    const btnKeep = document.createElement('button');
-    btnKeep.textContent = 'Keep existing markers';
-    btnKeep.className = 'regularButton';
-    btnKeep.onclick = () => {
-      destroyImportDialog();
-      handleKeepExistingMarkers(fileName);
-    };
+    // Still in flight → show loading until it settles.
+    const pending = importPrefetchPromise;
+    if (pending) {
+      const { showLoading } = await import('./utils/notification.js');
+      const ctl = showLoading('Fetching markers from server…');
+      let result: PrefetchedServerData;
+      try {
+        result = await pending;
+      } catch (e: unknown) {
+        result = {
+          ok: false,
+          useAlert: true,
+          message:
+            e instanceof Error
+              ? e.message
+              : 'Could not fetch the song data from the server due to a network error.',
+        };
+      }
+      if (importPrefetchDiscarded) return null;
+      importPrefetchPromise = null;
+      importPrefetchSettled = true;
+      importPrefetchResult = result;
+      if (!result.ok) {
+        ctl.fail(result.message);
+        await surfaceError(result);
+        return null;
+      }
+      ctl.done();
+      return result.data;
+    }
 
-    // Style buttons
-    [btnImport, btnMerge, btnKeep].forEach((btn) => {
-      btn.style.cssText = `
-        padding: 10px 16px; border: 1px solid var(--theme-color, #000);
-        border-radius: 4px; background: var(--secondary-color, #eee);
-        color: var(--theme-color, #000); cursor: pointer; font-size: 0.95em;
-      `;
-    });
-
-    buttonRow.append(btnImport, btnMerge, btnKeep);
-    box.append(title, message, buttonRow);
-    overlay.append(box);
-    document.body.append(overlay);
-    importDialogOverlay = overlay;
+    // No prefetch (unavailable) → legacy behavior with its own UI.
+    const { fetchServerTroffData } = await import('./utils/hash-download.js');
+    return await fetchServerTroffData(hashServerId, fileName);
   };
 
   // -------- Dialog actions --------
   const handleImportNewMarkers = async (fileName: string, hashServerId: number) => {
-    const { fetchServerTroffData } = await import('./utils/hash-download.js');
-    const serverData = await fetchServerTroffData(hashServerId, fileName);
+    const { saveDownloadLinkHistory, buildMarkerJsonStringForHistory } = await import(
+      './utils/hash-download.js'
+    );
+    const serverData = await getImportServerData(fileName, hashServerId);
     if (!serverData) return;
+
+    // v1 parity (scriptTroffClass importNew): record the newly seen server
+    // version so getVersionInfo counts it.
+    saveDownloadLinkHistory(hashServerId, fileName, {
+      markerJsonString: buildMarkerJsonStringForHistory(serverData),
+    });
 
     const songData = nDB.get(fileName) || {};
     // Clamp imported marker times to the song duration (no duration -> only clamp below 0)
@@ -3153,9 +3359,17 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const handleMergeMarkers = async (fileName: string, hashServerId: number) => {
-    const { fetchServerTroffData } = await import('./utils/hash-download.js');
-    const serverData = await fetchServerTroffData(hashServerId, fileName);
+    const { saveDownloadLinkHistory, buildMarkerJsonStringForHistory } = await import(
+      './utils/hash-download.js'
+    );
+    const serverData = await getImportServerData(fileName, hashServerId);
     if (!serverData) return;
+
+    // v1 parity (scriptTroffClass merge): record the newly seen server
+    // version so getVersionInfo counts it.
+    saveDownloadLinkHistory(hashServerId, fileName, {
+      markerJsonString: buildMarkerJsonStringForHistory(serverData),
+    });
 
     const songData = nDB.get(fileName) || {};
     const existingMarkers: TroffMarker[] = songData.markers || [];
@@ -3238,6 +3452,9 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const handleKeepExistingMarkers = async (fileName: string) => {
+    // Discard the prefetch so a late settlement never surfaces UI or writes.
+    importPrefetchDiscarded = true;
+    importPrefetchPromise = null;
     await selectSongFromHash(fileName);
     setUrlToSong(undefined, null); // Clear hash — we chose not to sync with server
   };
@@ -3278,7 +3495,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Different or missing serverId — show import dialog
-    createImportDialog(fileName, hashServerId);
+    openImportDialog(fileName, hashServerId);
   };
 
   // -------- Group edit dialog (V2) --------
@@ -3287,6 +3504,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const ensureGroupDialog = () => {
     if (!groupDialog) {
       groupDialog = document.createElement('t-group-dialog') as any;
+      // Element-scoped: forward to the settings panel so the single
+      // handleSignInRequest above processes it (one signInWithPopup per
+      // gesture). Attached once — ensureGroupDialog reuses the instance.
+      groupDialog.addEventListener('sign-in-requested', (event: Event) => {
+        const detail = (event as CustomEvent<{ action: string }>).detail;
+        settingsPanel?.dispatchEvent(
+          new CustomEvent('sign-in-requested', { detail, bubbles: true, composed: true })
+        );
+      });
       document.body.append(groupDialog);
     }
     groupDialog.signedIn = currentUserSignedIn;
@@ -3321,6 +3547,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const customEvent = event as CustomEvent<{ group?: any }>;
     const group = customEvent.detail?.group;
     if (!group) return;
+
+    document.dispatchEvent(
+      new CustomEvent('group-sync-status', {
+        detail: { syncing: true },
+        bubbles: true,
+        composed: true,
+      })
+    );
 
     try {
       const songLists: any[] = nDB.get('aoSongLists') || [];
@@ -3371,6 +3605,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (error) {
       log.e('Error saving group:', error);
+      showToast('Could not save group', 'error');
+    } finally {
+      document.dispatchEvent(
+        new CustomEvent('group-sync-status', {
+          detail: { syncing: false },
+          bubbles: true,
+          composed: true,
+        })
+      );
     }
   });
 
@@ -3380,6 +3623,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const groupId = customEvent.detail?.groupId;
     const group = customEvent.detail?.group;
     if (!groupId) return;
+
+    const ctl = showLoading('Deleting group online…');
 
     try {
       // Remove from local nDB
@@ -3400,13 +3645,19 @@ document.addEventListener('DOMContentLoaded', () => {
       if (songList && typeof songList.reloadSongs === 'function') {
         await songList.reloadSongs();
       }
+
+      ctl.done('Group deleted');
     } catch (error) {
       log.e('Error deleting group:', error);
+      ctl.fail('Could not delete group');
     }
   });
 
   // -------- Song edit dialog (V2) --------
   let songEditDialog: SongEditDialog | null = null;
+
+  /** Per-song debounce timers for the Firebase sync of song-info edits. */
+  const songInfoSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const ensureSongEditDialog = () => {
     if (!songEditDialog) {
@@ -3432,7 +3683,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Listen for song-saved events from the dialog
   document.addEventListener('song-saved', async (event: Event) => {
-    const customEvent = event as CustomEvent<{ songKey?: string; fileData?: Partial<TroffFileData> }>;
+    const customEvent = event as CustomEvent<{
+      songKey?: string;
+      fileData?: Partial<TroffFileData>;
+    }>;
     const { songKey, fileData } = customEvent.detail ?? {};
     if (!songKey || !fileData) return;
 
@@ -3462,7 +3716,29 @@ document.addEventListener('DOMContentLoaded', () => {
       updateFooterWithCurrentSong();
     }
 
-    // Sync edited metadata to Firebase groups (v2 equivalent of ifGroupSongUpdateFirestore)
+    const { isSongInFirebaseGroup } = await import('./utils/firebase-realtime.js');
+    if (isSongInFirebaseGroup(songKey)) {
+      document.dispatchEvent(
+        new CustomEvent('song-sync-status', {
+          detail: { songKey, syncing: true },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      try {
+        await saveSharedSongData(songKey);
+      } catch (error) {
+        log.e('Error saving song data:', error);
+      } finally {
+        document.dispatchEvent(
+          new CustomEvent('song-sync-status', {
+            detail: { songKey, syncing: false },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
+    }
   });
 
   // Listen for song-deleted events from the dialog
@@ -3500,6 +3776,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const songKey = getCurrentSongKey();
     if (!songKey) return;
     nDB.setOnSong(songKey, 'info', info);
+
+    // Debounce the Firebase sync per song (the nDB write above stays immediate).
+    const previousTimer = songInfoSyncTimers.get(songKey);
+    if (previousTimer !== undefined) clearTimeout(previousTimer);
+    songInfoSyncTimers.set(
+      songKey,
+      setTimeout(() => {
+        songInfoSyncTimers.delete(songKey);
+        void saveSharedSongData(songKey);
+      }, 2000)
+    );
   });
 
   // -------- Group song management (add/remove from detail view) --------
@@ -3615,10 +3902,43 @@ document.addEventListener('DOMContentLoaded', () => {
         return slKey != null && String(slKey) === String(groupKey);
       });
       if (updatedGroup?.firebaseGroupDocId) {
+        // Report per-row upload progress to t-media-parent via a bubbling
+        // CustomEvent dispatched on `document` — always connected for the
+        // upload's lifetime, so progress updates (including the final -1
+        // clear) still arrive if the originating element (e.g. t-group-list)
+        // unmounts while the upload is in flight.
+        const dispatchUploadProgress = (percent: number) => {
+          document.dispatchEvent(
+            new CustomEvent('song-upload-progress', {
+              detail: { songKey, percent },
+              bubbles: true,
+              composed: true,
+            })
+          );
+        };
         try {
           const { shareSongToFirebaseGroup } = await import('./utils/firebase-group-sync.js');
-          await shareSongToFirebaseGroup(updatedGroup, songKey);
+          dispatchUploadProgress(0);
+          const firebaseSongDocId = await shareSongToFirebaseGroup(
+            updatedGroup,
+            songKey,
+            dispatchUploadProgress
+          );
+          dispatchUploadProgress(-1);
+          if (firebaseSongDocId) {
+            showToast(`"${title || songKey}" was shared with the group.`, 'success');
+          } else {
+            // shareSongToFirebaseGroup returns undefined on no-op (offline /
+            // file not cached) — the song WAS added to the group locally
+            // above, so don't report the group-add itself as failed.
+            showToast(
+              `"${title || songKey}" was added to the group but not uploaded — check your connection, it may sync later.`,
+              'info'
+            );
+          }
         } catch (err) {
+          dispatchUploadProgress(-1);
+          showToast(`Could not share "${title || songKey}" with the group.`, 'error');
           log.e('Error sharing song to Firebase group:', err);
         }
       }
@@ -3640,5 +3960,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   });
-});
 
+  document.getElementById('loadScreen')?.remove();
+});
