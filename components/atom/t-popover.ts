@@ -63,7 +63,7 @@ export class Popover extends LitElement {
   @property({ type: String }) body = '';
   @property({ type: Object }) boundary: Element | null = null;
   @property({ type: String, attribute: 'prefer-position' })
-  preferPosition: 'center' | 'right' = 'center';
+  preferPosition: 'center' | 'right' | 'top-right' = 'center';
 
   private _portalHost: HTMLDivElement | null = null;
   private _portalRoot: ShadowRoot | null = null;
@@ -75,15 +75,18 @@ export class Popover extends LitElement {
   }
 
   private _boundHandleDocumentClick!: (event: MouseEvent) => void;
+  private _boundHandleKeydown!: (event: KeyboardEvent) => void;
   private _boundReposition!: () => void;
 
   connectedCallback() {
     super.connectedCallback();
     this._boundHandleDocumentClick = this._handleDocumentClick.bind(this);
+    this._boundHandleKeydown = this._handleKeydown.bind(this);
     this._boundReposition = this._reposition.bind(this);
     document.addEventListener('mousedown', this._boundHandleDocumentClick, {
       capture: true,
     });
+    document.addEventListener('keydown', this._boundHandleKeydown);
     window.addEventListener('scroll', this._boundReposition, {
       capture: true,
     });
@@ -100,6 +103,7 @@ export class Popover extends LitElement {
     document.removeEventListener('mousedown', this._boundHandleDocumentClick, {
       capture: true,
     });
+    document.removeEventListener('keydown', this._boundHandleKeydown);
     window.removeEventListener('scroll', this._boundReposition, {
       capture: true,
     });
@@ -205,6 +209,12 @@ export class Popover extends LitElement {
     if (!isInside && this.open) {
       this._close();
     }
+  }
+
+  private _handleKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    if (!this.open) return;
+    this._close();
   }
 
   private _handleTriggerClick(event: Event) {
