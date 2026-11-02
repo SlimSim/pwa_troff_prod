@@ -5,7 +5,8 @@
   /* sliders */
   --slider-track-width: 5px;
   --slider-thumb-size: 15px;
-  --slider-playback-region-width: 19px;
+  --waveform-width: 31px;
+  --waveform-padding: 2px;
 
   /* buttons */
   --button-border-radius: 0;
@@ -13,6 +14,9 @@
   --active-size: 4px;
   --hover-fuzzy: 0;
   --active-fuzzy: 0;
+
+  /* play button size (overridden by "Larger play button on mobile" in Advanced Settings) */
+  --play-button-size: 3.2rem;
 
   /* markers */
   --button-height: 46px; /*onlye for marker height, not for actual buttons...*/
@@ -22,4 +26,11 @@
 
   /* settings panel */
   --settings-column-width: 240.591px; /* this is exactly this because thats how wide the t-dial is! */
+}
+
+/* larger screens: waveform column widens (mobile-first) */
+@media (min-width: 576px) {
+  :root {
+    --waveform-width: 42px;
+  }
 }

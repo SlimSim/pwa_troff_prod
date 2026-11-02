@@ -13,6 +13,9 @@ export class BottomNav extends LitElement {
   @property({ type: Boolean }) settingsPanelVisible = false;
   @property({ type: Number }) speed = 100;
   @property({ type: Number }) volume = 75;
+  @property({ type: Number }) defaultSpeedValue = 100;
+  @property({ type: Number }) defaultVolumeValue = 75;
+  @property({ type: Number }) defaultIncrementUntilValue = 100;
   @property({ type: Number }) incrementUntillValue = 0;
   @property({ type: Boolean }) incrementUntillDisabled = false;
   @property({ type: Boolean }) showSpeedDropdown = false;
@@ -31,6 +34,8 @@ export class BottomNav extends LitElement {
   @property({ type: String }) loopTimesLeftLabel = '';
   @property({ type: Number }) pauseBefore = 3;
   @property({ type: Number }) waitBetween = 1;
+  @property({ type: Number }) defaultPauseBeforeValue = 3;
+  @property({ type: Number }) defaultWaitBetweenValue = 1;
   @property({ type: Boolean }) disablePauseBefore = false;
   @property({ type: Boolean }) disableWaitBetween = false;
   @property({ type: Number }) songDuration = 0;
@@ -57,6 +62,12 @@ export class BottomNav extends LitElement {
       padding: 5px var(--container-padding-x);
       /* box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3); */
       /* todo: have box-shadow ONLY when the body is scrollable, not the host */
+    }
+
+    @media (min-width: 768px) {
+      .play-button-wrapper {
+        --play-button-size: 3.2rem;
+      }
     }
 
     .nav-container {
@@ -96,6 +107,20 @@ export class BottomNav extends LitElement {
 
     .play-button-wrapper {
       position: relative;
+      width: 3.2rem;
+      height: 3.2rem;
+      --lift: calc((var(--play-button-size, 3.2rem) - 3.2rem) * 0.5);
+      bottom: var(--lift);
+    }
+
+    t-butt.main-play-button {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 0;
+      width: var(--play-button-size, 3.2rem);
+      height: var(--play-button-size, 3.2rem);
     }
 
     .play-button-content {
@@ -104,18 +129,18 @@ export class BottomNav extends LitElement {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      width: 3.2rem;
-      height: 3.2rem;
+      width: var(--play-button-size, 3.2rem);
+      height: var(--play-button-size, 3.2rem);
       line-height: 0.9;
-      font-size: 1.4rem;
+      font-size: calc(var(--play-button-size, 3.2rem) * 0.44);
     }
 
     .reset-icon-overlay {
       position: absolute;
       inset: 0;
       pointer-events: none;
-      bottom: 2.75px;
-      font-size: 42px;
+      bottom: calc(var(--play-button-size, 3.2rem) * 0.05);
+      font-size: calc(var(--play-button-size, 3.2rem) * 0.82);
     }
 
     .reset-icon-overlay t-icon {
@@ -142,9 +167,17 @@ export class BottomNav extends LitElement {
 
     .quick-play-button {
       position: absolute;
-      top: -12px;
-      right: -12px;
+      --d: calc(-0.77 * var(--play-button-size) + 1.7rem);
+      top: calc(var(--d) + var(--lift));
+      right: calc(var(--d) - var(--lift));
       z-index: 1;
+      --size: calc(var(--play-button-size, 3.2rem) * 0.5625);
+      width: var(--size);
+      height: var(--size);
+    }
+
+    .quick-play-icon {
+      font-size: calc(var(--play-button-size, 3.2rem) * 0.234);
     }
 
     .speed-volume-wrapper {
@@ -421,7 +454,7 @@ export class BottomNav extends LitElement {
                 label="Volume"
                 dangerWhenOver="100"
                 iconName="volume"
-                defaultValue="75"
+                .defaultValue=${this.defaultVolumeValue}
                 .value=${this.volume}
                 unit=""
                 @value-changed=${this._handleVolumeChanged}
@@ -432,7 +465,7 @@ export class BottomNav extends LitElement {
                 step="5"
                 label="Speed"
                 iconName="speed"
-                defaultValue="100"
+                .defaultValue=${this.defaultSpeedValue}
                 .value=${this.speed}
                 unit="%"
                 @value-changed=${this._handleSpeedChanged}
@@ -441,7 +474,7 @@ export class BottomNav extends LitElement {
                 label="Increment until"
                 unit="%"
                 show-disable-button
-                defaultValue="100"
+                .defaultValue=${this.defaultIncrementUntilValue}
                 .value=${this.incrementUntillValue}
                 .disabled=${this.incrementUntillDisabled}
                 .min=${50}
@@ -469,7 +502,11 @@ export class BottomNav extends LitElement {
               this._handleNavClick(e, 'quick-play');
             }}
           >
-            <t-icon name="${this.isPlaying ? 'pause' : 'play'}" fullsize></t-icon>
+            <t-icon
+              class="quick-play-icon"
+              name="${this.isPlaying ? 'pause' : 'play'}"
+              fullSize
+            ></t-icon>
           </t-butt>
           <t-butt class="main-play-button" title="Play song" round important key="Enter">
             <div class="play-button-content">
@@ -483,14 +520,7 @@ export class BottomNav extends LitElement {
                   : ''}
               <t-icon
                 name="${this.isPlaying || this.isStartingPlayback ? 'pause' : 'play'}"
-                ?fullSize=${!!(
-                  this.isStartingPlayback ||
-                  (this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore)
-                )}
-                ?large=${!(
-                  this.isStartingPlayback ||
-                  (this.pauseBefore > 0 && !this.isPlaying && !this.disablePauseBefore)
-                )}
+                fullSize
               ></t-icon>
             </div>
           </t-butt>
@@ -553,7 +583,7 @@ export class BottomNav extends LitElement {
                 label="Pause before"
                 iconName="pause-before"
                 unit="s"
-                defaultValue="3"
+                .defaultValue=${this.defaultPauseBeforeValue}
                 show-disable-button
                 .value=${this.pauseBefore}
                 .disabled=${this.disablePauseBefore}
@@ -563,7 +593,7 @@ export class BottomNav extends LitElement {
                 label="Wait between"
                 iconName="wait-between"
                 unit="s"
-                defaultValue="1"
+                .defaultValue=${this.defaultWaitBetweenValue}
                 show-disable-button
                 .value=${this.waitBetween}
                 .disabled=${this.disableWaitBetween}

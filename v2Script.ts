@@ -33,6 +33,7 @@ import {
   getCurrentSongKey,
   updateFooterWithCurrentSong,
 } from './utils/current-song.js';
+import { updateHeaderGroupsWithCurrentSong } from './utils/song-groups.js';
 import { nDB } from './assets/internal/db.js';
 import {
   audio,
@@ -60,6 +61,7 @@ import {
   ensureDefaultMarkers,
 } from './utils/troff-settings.js';
 import { extractAlbumArt } from './utils/album-art.js';
+import { generateWaveformPeaks } from './utils/waveform.js';
 import { calculateIncrementUntilSpeed } from './utils/increment-until.js';
 import type {
   TroffMarker,
@@ -89,6 +91,7 @@ import {
   TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
   TROFF_SETTING_KEEP_SCREEN_ON,
   TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER,
+  TROFF_SETTING_UI_LARGER_PLAY_BUTTON_MOBILE,
   TROFF_SETTING_DARK_MODE,
   TROFF_SETTING_THEME,
   TROFF_SETTING_BANNER_SHOW,
@@ -673,6 +676,9 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
   let lastTimeUpdateTime = 0;
   let configuredLoopTimes = 1;
   let loopTimesLeft = 1;
+  // Bumped for every waveform request so a slow (stale) song's peaks can
+  // never overwrite the peaks of a song that loaded after it.
+  let waveformRequestId = 0;
 
   // Current auth state, kept in sync by the onAuthStateChanged callback below
   let currentUserSignedIn = false;
@@ -703,6 +709,18 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
       if (videoPlayer) videoPlayer.hidden = true;
       if (videoElement) videoElement.pause();
     }
+
+    const requestId = ++waveformRequestId;
+    // Clear the previous song's waveform right away so it doesn't linger
+    // while the new song's peaks are generated (async audio decode).
+    markerSlider.waveformPeaks = [];
+    void generateWaveformPeaks(result.url).then((peaks) => {
+      if (requestId !== waveformRequestId || !peaks) return;
+      // Float32Array -> number[]; toFixed strips the float32 representation
+      // noise so the component gets clean values (0.2 instead of 0.200000003).
+      markerSlider.waveformPeaks = Array.from(peaks, (peak) => Number(peak.toFixed(6)));
+    });
+
     applyStoredVolumeAndSpeedToMedia();
   };
 
@@ -1566,6 +1584,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
     settingsPanel.keepScreenOn = nDB.get(TROFF_SETTING_KEEP_SCREEN_ON) ?? true;
     settingsPanel.onSelectMarkerGoToMarker =
       nDB.get(TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER) ?? true;
+    settingsPanel.largerPlayButtonMobile = nDB.get(TROFF_SETTING_UI_LARGER_PLAY_BUTTON_MOBILE) ?? true;
     void updateWakeLockForPlayback(false, false);
     settingsPanel.darkMode = nDB.get(TROFF_SETTING_DARK_MODE) ?? false;
     settingsPanel.theme = nDB.get(TROFF_SETTING_THEME) ?? 'col1';
@@ -1624,6 +1643,22 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
     currentSongControls.loopTimesValue = Number.isFinite(configuredLoops)
       ? String(configuredLoops)
       : 'Inf';
+
+    // Load global default song values (the t-dial reset targets) from nDB
+    currentSongControls.defaultStartBeforeValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_START_BEFORE_VALUE)) || 4;
+    currentSongControls.defaultStopAfterValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_STOP_AFTER_VALUE)) || 2;
+    currentSongControls.defaultPauseBeforeValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_PAUSE_BEFORE_VALUE)) || 3;
+    currentSongControls.defaultWaitBetweenValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_WAIT_BETWEEN_VALUE)) || 1;
+    currentSongControls.defaultIncrementUntilValue =
+      Number(nDB.get('TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_INCREMENT_UNTIL_VALUE')) || 100;
+    currentSongControls.defaultVolumeValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_VOLUME_VALUE)) || 75;
+    currentSongControls.defaultSpeedValue =
+      Number(nDB.get(TROFF_SAVE_VALUE_TROFF_SETTING_SONG_DEFAULT_SPEED_VALUE)) || 100;
 
     // Version link info
     const versionInfo = songKey ? getVersionInfo(songKey) : { numberOfVersions: 0, findUrl: '' };
@@ -1731,6 +1766,13 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
       settingsControls.disableWaitBetween = currentSongControls.disableWaitBetween;
       settingsControls.numberOfVersions = currentSongControls.numberOfVersions;
       settingsControls.findUrl = currentSongControls.findUrl;
+      settingsControls.defaultStartBeforeValue = currentSongControls.defaultStartBeforeValue;
+      settingsControls.defaultStopAfterValue = currentSongControls.defaultStopAfterValue;
+      settingsControls.defaultPauseBeforeValue = currentSongControls.defaultPauseBeforeValue;
+      settingsControls.defaultWaitBetweenValue = currentSongControls.defaultWaitBetweenValue;
+      settingsControls.defaultIncrementUntilValue = currentSongControls.defaultIncrementUntilValue;
+      settingsControls.defaultVolumeValue = currentSongControls.defaultVolumeValue;
+      settingsControls.defaultSpeedValue = currentSongControls.defaultSpeedValue;
     }
 
     // Also push tempo onto the settings panel host so the template binding
@@ -2370,6 +2412,8 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
       const numericKey = defaultNumericKeyBySetting[setting];
       if (numericKey) {
         nDB.set(numericKey, value);
+        syncCurrentSongControlsValues();
+        updateFooterWithCurrentSong();
         return;
       }
 
@@ -2384,6 +2428,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
         extraExtendedMarkerColor: TROFF_SETTING_EXTRA_EXTENDED_MARKER_COLOR,
         keepScreenOn: TROFF_SETTING_KEEP_SCREEN_ON,
         onSelectMarkerGoToMarker: TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER,
+        largerPlayButtonMobile: TROFF_SETTING_UI_LARGER_PLAY_BUTTON_MOBILE,
         darkMode: TROFF_SETTING_DARK_MODE,
         theme: TROFF_SETTING_THEME,
         bannerShow: TROFF_SETTING_BANNER_SHOW,
@@ -2639,12 +2684,14 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
               if (songList && typeof (songList as any).reloadSongs === 'function') {
                 (songList as any).reloadSongs();
               }
+              updateHeaderGroupsWithCurrentSong();
             });
 
             // A song that was already open (auto-restored) at boot may have had
             // its markers drawn from stale nDB before this sync completed. Re-render
             // it deterministically so synced markers/settings appear immediately.
             refreshCurrentSongUI();
+            updateHeaderGroupsWithCurrentSong();
           }
         } catch (error) {
           log.e('onAuthStateChanged callback failed:', error);
@@ -2662,6 +2709,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
     const defaultsIfUnset: [string, boolean][] = [
       [TROFF_SETTING_KEEP_SCREEN_ON, true],
       [TROFF_SETTING_ON_SELECT_MARKER_GO_TO_MARKER, true],
+      [TROFF_SETTING_UI_LARGER_PLAY_BUTTON_MOBILE, true],
       [TROFF_SETTING_DARK_MODE, false],
     ];
     for (const [key, defaultValue] of defaultsIfUnset) {
@@ -2969,6 +3017,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
         } else {
           header.style.removeProperty('--theme-color');
         }
+        updateHeaderGroupsWithCurrentSong();
       });
 
       songList.addEventListener('song-list-closed', () => {
@@ -3083,6 +3132,54 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
         }
       }
     };
+    const handlePlaybackStopReached = () => {
+      const media = getActiveMedia();
+      if (!markerSlider) {
+        return;
+      }
+      const playbackStart = markerSlider.getPlaybackStart();
+      if (Number.isFinite(loopTimesLeft)) {
+        if (loopTimesLeft <= 1) {
+          media.pause();
+          media.currentTime = clampMediaTime(media, playbackStart);
+          resetLoopTimesCounter();
+          return;
+        }
+
+        loopTimesLeft -= 1;
+        updateLoopTimesDisplay();
+      }
+
+      // Apply "increment until" speed change on each loop restart
+      if (settingsPanel && !settingsPanel.incrementUntillDisabled) {
+        const targetSpeed = Number(settingsPanel.incrementUntillValue) || 0;
+        const currentSpeed = getActiveMedia().playbackRate * 100;
+        const newSpeed = calculateIncrementUntilSpeed(currentSpeed, targetSpeed, loopTimesLeft);
+        getActiveMedia().playbackRate = newSpeed / 100;
+        if (videoElement) {
+          videoElement.playbackRate = newSpeed / 100;
+        }
+        if (videoPlayer) {
+          (videoPlayer as { speed?: number }).speed = newSpeed;
+        }
+        if (footer) {
+          footer.speed = newSpeed;
+        }
+        const songKey = getCurrentSongKey();
+        if (songKey) {
+          nDB.setOnSong(songKey, 'TROFF_VALUE_speedBar', newSpeed);
+        }
+        syncCurrentSongControlsValues();
+      }
+
+      const waitBetweenDelay = getWaitBetweenDelay();
+      isLoopTransitionPause = true;
+      media.currentTime = clampMediaTime(media, playbackStart);
+      schedulePlaybackAfterDelay(waitBetweenDelay);
+      if (waitBetweenDelay > 0) {
+        media.pause();
+      }
+    };
     const onTimeUpdate = () => {
       try {
         const media = getActiveMedia();
@@ -3107,48 +3204,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
 
         // Check if playback reached the stop point
         if (now >= markerSlider.getPlaybackStop()) {
-          const playbackStart = markerSlider.getPlaybackStart();
-          if (Number.isFinite(loopTimesLeft)) {
-            if (loopTimesLeft <= 1) {
-              media.pause();
-              media.currentTime = clampMediaTime(media, playbackStart);
-              resetLoopTimesCounter();
-              return;
-            }
-
-            loopTimesLeft -= 1;
-            updateLoopTimesDisplay();
-          }
-
-          // Apply "increment until" speed change on each loop restart
-          if (settingsPanel && !settingsPanel.incrementUntillDisabled) {
-            const targetSpeed = Number(settingsPanel.incrementUntillValue) || 0;
-            const currentSpeed = getActiveMedia().playbackRate * 100;
-            const newSpeed = calculateIncrementUntilSpeed(currentSpeed, targetSpeed, loopTimesLeft);
-            getActiveMedia().playbackRate = newSpeed / 100;
-            if (videoElement) {
-              videoElement.playbackRate = newSpeed / 100;
-            }
-            if (videoPlayer) {
-              (videoPlayer as { speed?: number }).speed = newSpeed;
-            }
-            if (footer) {
-              footer.speed = newSpeed;
-            }
-            const songKey = getCurrentSongKey();
-            if (songKey) {
-              nDB.setOnSong(songKey, 'TROFF_VALUE_speedBar', newSpeed);
-            }
-            syncCurrentSongControlsValues();
-          }
-
-          const waitBetweenDelay = getWaitBetweenDelay();
-          isLoopTransitionPause = true;
-          media.currentTime = clampMediaTime(media, playbackStart);
-          schedulePlaybackAfterDelay(waitBetweenDelay);
-          if (waitBetweenDelay > 0) {
-            media.pause();
-          }
+          handlePlaybackStopReached();
         }
       } catch (error) {
         console.error(error);
@@ -3178,6 +3234,22 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
       updateHeaderCountdownDisplay();
     };
     const onEnded = () => {
+      // End-marker at duration: native `ended` must behave identically to
+      // timeupdate reaching the stop marker (same loop count / wait-between
+      // / seek-to-start logic). Same condition as onTimeUpdate.
+      const endedMedia = getActiveMedia();
+      const playbackStop = markerSlider ? markerSlider.getPlaybackStop() : NaN;
+      const endedTime = Number(endedMedia.currentTime);
+      if (
+        markerSlider &&
+        Number.isFinite(playbackStop) &&
+        Number.isFinite(endedTime) &&
+        endedTime >= playbackStop
+      ) {
+        handlePlaybackStopReached();
+        updateHeaderCountdownDisplay();
+        return;
+      }
       if (isLoopTransitionPause) {
         isLoopTransitionPause = false;
       } else {
@@ -3679,6 +3751,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
   // -------- Main hash download handler --------
   const handleHashDownload = async (hash: string) => {
     const { parseHash, downloadSongFromHash } = await import('./utils/hash-download.js');
+    const { createGroupSongAddedEvent } = await import('./utils/online-group-add.js');
     const parsed = parseHash(hash);
     if (!parsed) return;
 
@@ -3699,6 +3772,8 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
 
       showToast(`"${downloadedFileName}" downloaded successfully!`, 'success');
       await selectSongFromHash(downloadedFileName);
+      const groupSongAddedEvent = createGroupSongAddedEvent(downloadedFileName);
+      if (groupSongAddedEvent) document.dispatchEvent(groupSongAddedEvent);
       // Hash stays — song is now downloaded with serverId set
       return;
     }
@@ -3708,6 +3783,8 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
     if (localServerId != null && String(localServerId) === String(hashServerId)) {
       // Same serverId — just select the song (no dialog needed)
       await selectSongFromHash(fileName);
+      const existingGroupSongAddedEvent = createGroupSongAddedEvent(fileName);
+      if (existingGroupSongAddedEvent) document.dispatchEvent(existingGroupSongAddedEvent);
       return;
     }
 
@@ -3807,6 +3884,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
         songLists.push({ ...group });
       }
       nDB.set('aoSongLists', songLists);
+      updateHeaderGroupsWithCurrentSong();
 
       // Reload the song list to reflect changes
       if (songList && typeof songList.reloadSongs === 'function') {
@@ -3851,6 +3929,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
         return slKey != null && String(slKey) !== String(groupId);
       });
       nDB.set('aoSongLists', updatedLists);
+      updateHeaderGroupsWithCurrentSong();
 
       // Delete from Firebase if it's a Firebase group
       if (group?.firebaseGroupDocId) {
@@ -4044,6 +4123,7 @@ document.addEventListener('DOMContentLoaded', function handleV2Boot() {
     }
     if (!found) return;
     nDB.set('aoSongLists', songLists);
+    updateHeaderGroupsWithCurrentSong();
 
     // Save to Firebase if it's a Firebase group
     const updated = songLists.find((sl: any) => {

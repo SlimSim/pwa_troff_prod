@@ -30,6 +30,14 @@ interface GroupPayload {
   name?: string;
 }
 
+/**
+ * Backing store for the nDB mock below. Only 'aoSongLists' is persisted
+ * (get/set) so utils/song-groups.js can read the list the handlers just
+ * wrote; every other key keeps the old fallback behaviour. Re-assigned in
+ * beforeEach so each test starts empty.
+ */
+let nDBStore: Record<string, unknown> = {};
+
 function appendRequiredDom() {
   const header = document.createElement('div');
   header.id = 'header';
@@ -93,6 +101,7 @@ describe('v2Script group save/delete background sync toasts', () => {
   beforeEach(() => {
     vi.resetModules();
     document.body.innerHTML = '';
+    nDBStore = {};
 
     mocks.showLoading.mockClear();
     mocks.showToast.mockClear();
@@ -116,7 +125,9 @@ describe('v2Script group save/delete background sync toasts', () => {
           listener &&
           (type === 'DOMContentLoaded' ||
             type === 'group-saved' ||
-            type === 'group-deleted')
+            type === 'group-deleted' ||
+            type === 'group-song-added' ||
+            type === 'group-song-removed')
         ) {
           trackedListeners.push({ type, listener });
         }
@@ -172,10 +183,15 @@ describe('v2Script group save/delete background sync toasts', () => {
     vi.doMock('../assets/internal/db.js', () => ({
       nDB: {
         get: vi.fn((key: string) => {
+          if (key in nDBStore) return nDBStore[key];
           if (key === 'aoSongLists') return [];
           return { markers: [{ id: 'm1' }] };
         }),
-        set: vi.fn(),
+        set: vi.fn((key: string, value: unknown) => {
+          // Persist only aoSongLists so a handler's nDB.set(...) is visible to
+          // the next nDB.get(...) (what utils/song-groups.js reads back).
+          if (key === 'aoSongLists') nDBStore[key] = value;
+        }),
         setOnSong: vi.fn(),
       },
     }));
@@ -337,5 +353,78 @@ describe('v2Script group save/delete background sync toasts', () => {
     expect(syncStatusEvents).toEqual([{ syncing: true }, { syncing: false }]);
     expect(mocks.showLoading).not.toHaveBeenCalled();
     expect(mocks.loadingController.done).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('adding/removing a song from a group refreshes header.groupNames for the current song', async () => {
+    appendRequiredDom();
+    await bootV2Script();
+
+    // Current song is shared (after the add) with the "Band" group only.
+    nDBStore['stroCurrentSongPathAndGalleryId'] = { strPath: 'song.mp3' };
+    nDBStore['aoSongLists'] = [
+      { id: 7, firebaseGroupDocId: 'doc1', name: 'Band', songs: [] },
+    ];
+    const header = document.getElementById('header') as HTMLElement & {
+      groupNames?: string[];
+    };
+
+    // Add the current song to the group → the indicator must appear.
+    document.dispatchEvent(
+      new CustomEvent('group-song-added', {
+        detail: { groupKey: 'doc1', songKey: 'song.mp3', title: 'song.mp3' },
+      })
+    );
+    await flush();
+    expect(header.groupNames).toEqual(['Band']);
+
+    // Remove it again → the song is in no shared group, so it must clear.
+    document.dispatchEvent(
+      new CustomEvent('group-song-removed', {
+        detail: { groupKey: 'doc1', songKey: 'song.mp3' },
+      })
+    );
+    await flush();
+    expect(header.groupNames).toEqual([]);
+  }, 30000);
+
+  it('group-header-color refreshes header.groupNames AND header.selectedGroupName from nDB', async () => {
+    appendRequiredDom();
+    await bootV2Script();
+
+    // The current song lives in group "Band" (docId d1), and that group is the
+    // one selected in the song-list navigation state.
+    nDBStore['stroCurrentSongPathAndGalleryId'] = { strPath: 'song.mp3' };
+    nDBStore['aoSongLists'] = [
+      {
+        id: 7,
+        firebaseGroupDocId: 'd1',
+        name: 'Band',
+        songs: [{ fullPath: 'song.mp3', galleryId: 'gallery-1' }],
+      },
+    ];
+    nDBStore['TROFF_SONG_LIST_NAVIGATION_STATE'] = { tab: 'groups', selected_entity: 'd1' };
+
+    const header = document.getElementById('header') as HTMLElement & {
+      groupNames?: string[];
+      selectedGroupName?: string;
+    };
+    const songList = document.getElementById('songList') as HTMLElement;
+
+    // Same event t-media-parent dispatches (bubbles + composed) after a group
+    // detail is opened/closed.
+    songList.dispatchEvent(
+      new CustomEvent('group-header-color', {
+        detail: { color: '#fff' },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await flush();
+
+    // The header tint still applies…
+    expect(header.style.getPropertyValue('--theme-color')).toBe('#fff');
+    // …and the header group info is refreshed from nDB.
+    expect(header.groupNames).toEqual(['Band']);
+    expect(header.selectedGroupName).toBe('Band');
   }, 30000);
 });

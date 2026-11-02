@@ -1,5 +1,5 @@
 import { LitElement, html, css, PropertyValues } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import './t-track-list.js';
 import './t-artist-list.js';
 import './t-genre-list.js';
@@ -7,6 +7,7 @@ import './t-group-list.js';
 import './t-media-footer.js';
 import './t-list-header.js';
 import './t-header-actions.js';
+import './t-server-song-list.js';
 import '../atom/t-butt.js';
 import '../atom/t-dropdown-button.js';
 import '../atom/t-input.js';
@@ -26,8 +27,15 @@ import {
   filterGroups,
 } from '../../utils/media-search.js';
 import type { TrackLike } from '../../utils/media-search.js';
+import {
+  filterServerSongs,
+  getCachedServerSongList,
+  refreshServerSongList,
+} from '../../utils/server-song-list.js';
+import type { ServerSongTab } from '../../utils/server-song-list.js';
 import log from '../../utils/log.js';
 import { extractAlbumArt } from '../../utils/album-art.js';
+import { setActiveOnlineGroupAdd } from '../../utils/online-group-add.js';
 
 const ts = () => new Date().toLocaleTimeString();
 
@@ -255,7 +263,7 @@ export class MediaParent extends LitElement {
       opacity: 0.65;
       color: var(--on-primary-color);
       line-height: 1.5;
-      margin: 0 0 8px 0;
+      margin: 0;
     }
 
     .empty-state-auth-busy {
@@ -309,6 +317,71 @@ export class MediaParent extends LitElement {
       margin-bottom: 12px;
       font-size: 0.9rem;
     }
+
+    /* ── "Not finding it? Add song from device" (active search) ── */
+    .add-song-from-device-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px var(--container-padding-x);
+      cursor: pointer;
+      border-top: 1px solid var(--list-border-color);
+      color: var(--on-primary-color);
+    }
+
+    .add-song-from-device-row:hover {
+      background-color: var(--list-hover-bg);
+    }
+
+    /* Add choice dropdown menu */
+    .add-choice-menu {
+      min-width: 180px;
+      padding: 4px 0;
+    }
+
+    .add-choice-menu t-butt {
+      width: 100%;
+      text-align: left;
+      justify-content: flex-start;
+    }
+
+    .local-songs-content.hidden-in-online-mode {
+      display: none;
+    }
+
+    .online-add-back {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px var(--container-padding-x);
+      font-size: 0.9rem;
+      color: var(--on-gray-out, #666);
+    }
+
+    .more-content {
+      display: flex;
+      flex-direction: column;
+      padding: 8px;
+      gap: 4px;
+    }
+
+    .more-content t-butt {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
+    }
+
+    .more-content .header-sort-btn,
+    .header-sort-btn {
+      width: 100%;
+    }
+
+    .more-content .header-sort-btn t-butt,
+    .header-sort-btn t-butt {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
+    }
   `;
 
   @property({ type: Boolean, reflect: true }) visible = false;
@@ -326,6 +399,7 @@ export class MediaParent extends LitElement {
   @property({ type: String }) genreSortOrder = 'ascending';
   @property({ type: Boolean }) showGenreSortDropdown = false;
   @property({ type: String }) searchQuery = '';
+  @state() private _onlineAddMode = false;
   @property({ type: Boolean }) isDesktop = false;
   @property({ type: Number }) highlightedIndex = -1;
   @property({ type: Boolean, state: true })
@@ -385,6 +459,10 @@ export class MediaParent extends LitElement {
   private _pendingGroupKey: string | null = null;
   /** Pending scroll-to-active-song timeout — cleared on disconnect so it never fires after teardown. */
   private _scrollActiveSongTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Set once this instance has kicked off the lazy server-song refresh. */
+  private _serverSongsRequested = false;
+  /** True while the lazy server-song list fetch is in flight. */
+  private _serverSongsLoading = false;
 
   /** Persist the current navigation state (tab + selected entity) to nDB. */
   private _saveNavigationState() {
@@ -519,6 +597,8 @@ export class MediaParent extends LitElement {
 
   updated(changedProperties: PropertyValues) {
     if (changedProperties.has('visible') && !this.visible) {
+      this._onlineAddMode = false;
+      setActiveOnlineGroupAdd(null);
       this.dispatchEvent(
         new CustomEvent('song-list-closed', {
           bubbles: true,
@@ -540,6 +620,7 @@ export class MediaParent extends LitElement {
     if (changedProperties.has('searchQuery')) {
       const items = this._getVisibleItems();
       this.highlightedIndex = items.length > 0 ? 0 : -1;
+      this._maybeRefreshServerSongs();
     }
   }
 
@@ -1073,6 +1154,8 @@ export class MediaParent extends LitElement {
 
   private _handleFilterChanged(event: CustomEvent) {
     this.currentFilter = event.detail.filter;
+    this._onlineAddMode = false;
+    setActiveOnlineGroupAdd(null);
     this.searchQuery = '';
     this._closeOpenDetailViews();
     this._clearContext();
@@ -1136,6 +1219,30 @@ export class MediaParent extends LitElement {
     if (input) {
       input.click();
     }
+  }
+
+  private _chooseAddOption(option: 'online' | 'device') {
+    // Close the dropdown (the specific add choice one)
+    const dd = this.shadowRoot?.querySelector('t-dropdown-button.add-choice') as any;
+    if (dd) dd.open = false;
+
+    if (option === 'device') {
+      this._handleAddSong();
+    } else {
+      this._onlineAddMode = true;
+      setActiveOnlineGroupAdd(
+        this._currentGroupKey || (this._contextType === 'group' ? this._contextKey : '') || null
+      );
+      this.searchQuery = '';
+      this._maybeRefreshServerSongs();
+      this.requestUpdate();
+    }
+  }
+
+  private _exitOnlineAddMode() {
+    this._onlineAddMode = false;
+    setActiveOnlineGroupAdd(null);
+    this.requestUpdate();
   }
 
   private _handleSignIn() {
@@ -1472,9 +1579,28 @@ export class MediaParent extends LitElement {
     }
   }
 
-  private _handleSearchSongs() {
-    // Logic to be implemented later
-    console.log('Search songs button clicked');
+  /**
+   * Fetch the server song list lazily: on the first non-empty search query,
+   * and only once per session (refreshServerSongList has its own module-level
+   * guard, so later calls — including other MediaParent instances — reuse the
+   * fetched list instead of hitting Firebase again).
+   */
+  private _maybeRefreshServerSongs() {
+    if (this._serverSongsRequested) return;
+    // Allow empty query when explicitly entering "search online" mode (to show full unfiltered server list).
+    // Normal search still requires non-empty query to avoid unnecessary fetches.
+    if (this.searchQuery.trim() === '' && !this._onlineAddMode) return;
+    this._serverSongsRequested = true;
+    this._serverSongsLoading = true;
+    this.requestUpdate();
+    refreshServerSongList()
+      .catch((error: unknown) => {
+        log.w('Could not refresh the server song list', error);
+      })
+      .finally(() => {
+        this._serverSongsLoading = false;
+        this.requestUpdate();
+      });
   }
 
   private _handleSearchInput(event: Event) {
@@ -1922,7 +2048,20 @@ export class MediaParent extends LitElement {
   render() {
     const songs = this.songs;
     const query = this.searchQuery;
-    const isEmpty = songs.length === 0 && this.groups.length === 0;
+    const hasActiveQuery = query.trim() !== '';
+    // While a search query is active the search results take over: the
+    // welcome empty state must not be shown.
+    const isEmpty = songs.length === 0 && this.groups.length === 0 && !hasActiveQuery;
+    const serverTab = this.currentFilter as ServerSongTab;
+    // The online-add back bar names where the downloaded songs end up: the
+    // group when we are inside one, otherwise the user's own library.
+    const onlineAddTargetLabel =
+      this._currentGroupKey || (this._contextType === 'group' ? this._contextKey : '')
+        ? 'this group'
+        : 'your library';
+    // In online add mode the header count must reflect the online list, using
+    // the exact same filter call as the rendered t-server-song-list below.
+    const onlineSongCount = filterServerSongs(getCachedServerSongList(), query, serverTab).length;
 
     // Tracks: filter by title, then sort.
     const visibleTracks = this._getVisibleTracks();
@@ -2003,42 +2142,48 @@ export class MediaParent extends LitElement {
         : html`
             <t-list-header
               title=${headerTitle}
-              count=${this.currentFilter === 'tracks'
-                ? songs.length
-                : this.currentFilter === 'artists'
-                  ? this._getUniqueArtists(songs).length
-                  : this.currentFilter === 'genre'
-                    ? this._getUniqueGenres(songs).length
-                    : this.groups.length}
+              count=${this._onlineAddMode
+                ? onlineSongCount
+                : this.currentFilter === 'tracks'
+                  ? songs.length
+                  : this.currentFilter === 'artists'
+                    ? this._getUniqueArtists(songs).length
+                    : this.currentFilter === 'genre'
+                      ? this._getUniqueGenres(songs).length
+                      : this.groups.length}
               ?isSearchFocused=${this.isSearchFocused}
             >
               ${this.currentFilter === 'tracks'
                 ? html`
                     <t-header-actions
                       slot="actions"
-                      addIcon="note-plus"
-                      addTitle="Add songs"
-                      ?showFind=${true}
                       searchPlaceholder="Search tracks…"
                       searchValue=${this.searchQuery}
                       ?isSearchFocused=${this.isSearchFocused}
-                      @add-click=${this._handleAddSong}
-                      @find-click=${this._handleSearchSongs}
                       @search-input=${this._handleSearchInput}
                       @search-keydown=${this._handleSearchKeydown}
                       @search-focus=${this._handleSearchFocus}
                       @search-blur=${this._handleSearchBlur}
                     >
-                      <t-dropdown-button
-                        slot="sort"
-                        .open=${this.showSortDropdown}
-                        @dropdown-toggled=${this._handleSortDropdownToggled}
-                      >
-                        <t-butt icon slot="button" title="Sort options">
-                          <t-icon name="sort"></t-icon>
+                      <div slot="more" class="more-content">
+                        <t-butt @click=${() => this._chooseAddOption('device')}>
+                          <t-icon name="note-plus"></t-icon>
+                          <span>Add song from device</span>
                         </t-butt>
-                        <div slot="dropdown">${this._renderSortDropdown()}</div>
-                      </t-dropdown-button>
+                        <t-butt @click=${() => this._chooseAddOption('online')}>
+                          <t-icon name="note-search"></t-icon>
+                          <span>Download songs online</span>
+                        </t-butt>
+                        <t-dropdown-button
+                          .open=${this.showSortDropdown}
+                          @dropdown-toggled=${this._handleSortDropdownToggled}
+                        >
+                          <t-butt icon slot="button" title="Sort options">
+                            <t-icon name="sort"></t-icon> Sort
+                          </t-butt>
+                          <div slot="dropdown">${this._renderSortDropdown()}</div>
+                        </t-dropdown-button>
+                      </div>
                     </t-header-actions>
                   `
                 : ''}
@@ -2046,27 +2191,33 @@ export class MediaParent extends LitElement {
                 ? html`
                     <t-header-actions
                       slot="actions"
-                      addIcon="note-plus"
-                      addTitle="Add artist"
                       searchPlaceholder="Search artists…"
                       searchValue=${this.searchQuery}
                       ?isSearchFocused=${this.isSearchFocused}
-                      @add-click=${this._handleAddSong}
                       @search-input=${this._handleSearchInput}
                       @search-keydown=${this._handleSearchKeydown}
                       @search-focus=${this._handleSearchFocus}
                       @search-blur=${this._handleSearchBlur}
                     >
-                      <t-dropdown-button
-                        slot="sort"
-                        .open=${this.showArtistSortDropdown}
-                        @dropdown-toggled=${this._handleArtistSortDropdownToggled}
-                      >
-                        <t-butt icon slot="button" title="Sort options">
-                          <t-icon name="sort"></t-icon>
+                      <div slot="more" class="more-content">
+                        <t-butt @click=${() => this._chooseAddOption('device')}>
+                          <t-icon name="note-plus"></t-icon>
+                          <span>Add song from device</span>
                         </t-butt>
-                        <div slot="dropdown">${this._renderArtistSortDropdown()}</div>
-                      </t-dropdown-button>
+                        <t-butt @click=${() => this._chooseAddOption('online')}>
+                          <t-icon name="note-search"></t-icon>
+                          <span>Download songs online</span>
+                        </t-butt>
+                        <t-dropdown-button
+                          .open=${this.showArtistSortDropdown}
+                          @dropdown-toggled=${this._handleArtistSortDropdownToggled}
+                        >
+                          <t-butt icon slot="button" title="Sort options">
+                            <t-icon name="sort"></t-icon> Sort
+                          </t-butt>
+                          <div slot="dropdown">${this._renderArtistSortDropdown()}</div>
+                        </t-dropdown-button>
+                      </div>
                     </t-header-actions>
                   `
                 : ''}
@@ -2074,27 +2225,33 @@ export class MediaParent extends LitElement {
                 ? html`
                     <t-header-actions
                       slot="actions"
-                      addIcon="note-plus"
-                      addTitle="Add genre"
                       searchPlaceholder="Search genres…"
                       searchValue=${this.searchQuery}
                       ?isSearchFocused=${this.isSearchFocused}
-                      @add-click=${this._handleAddSong}
                       @search-input=${this._handleSearchInput}
                       @search-keydown=${this._handleSearchKeydown}
                       @search-focus=${this._handleSearchFocus}
                       @search-blur=${this._handleSearchBlur}
                     >
-                      <t-dropdown-button
-                        slot="sort"
-                        .open=${this.showGenreSortDropdown}
-                        @dropdown-toggled=${this._handleGenreSortDropdownToggled}
-                      >
-                        <t-butt icon slot="button" title="Sort options">
-                          <t-icon name="sort"></t-icon>
+                      <div slot="more" class="more-content">
+                        <t-butt @click=${() => this._chooseAddOption('device')}>
+                          <t-icon name="note-plus"></t-icon>
+                          <span>Add song from device</span>
                         </t-butt>
-                        <div slot="dropdown">${this._renderGenreSortDropdown()}</div>
-                      </t-dropdown-button>
+                        <t-butt @click=${() => this._chooseAddOption('online')}>
+                          <t-icon name="note-search"></t-icon>
+                          <span>Download songs online</span>
+                        </t-butt>
+                        <t-dropdown-button
+                          .open=${this.showGenreSortDropdown}
+                          @dropdown-toggled=${this._handleGenreSortDropdownToggled}
+                        >
+                          <t-butt icon slot="button" title="Sort options">
+                            <t-icon name="sort"></t-icon> Sort
+                          </t-butt>
+                          <div slot="dropdown">${this._renderGenreSortDropdown()}</div>
+                        </t-dropdown-button>
+                      </div>
                     </t-header-actions>
                   `
                 : ''}
@@ -2105,27 +2262,37 @@ export class MediaParent extends LitElement {
                       : html`
                           <t-header-actions
                             slot="actions"
-                            addIcon="group-plus"
-                            addTitle="Add group"
                             searchPlaceholder="Search groups…"
                             searchValue=${this.searchQuery}
                             ?isSearchFocused=${this.isSearchFocused}
-                            @add-click=${this._handleAddGroup}
                             @search-input=${this._handleSearchInput}
                             @search-keydown=${this._handleSearchKeydown}
                             @search-focus=${this._handleSearchFocus}
                             @search-blur=${this._handleSearchBlur}
                           >
-                            <t-dropdown-button
-                              slot="sort"
-                              .open=${this.showGroupSortDropdown}
-                              @dropdown-toggled=${this._handleGroupSortDropdownToggled}
-                            >
-                              <t-butt icon slot="button" title="Sort options">
-                                <t-icon name="sort"></t-icon>
+                            <div slot="more" class="more-content">
+                              <t-butt @click=${this._handleAddGroup}>
+                                <t-icon name="group-plus"></t-icon>
+                                <span>Add group</span>
                               </t-butt>
-                              <div slot="dropdown">${this._renderGroupSortDropdown()}</div>
-                            </t-dropdown-button>
+                              <t-butt @click=${() => this._chooseAddOption('device')}>
+                                <t-icon name="note-plus"></t-icon>
+                                <span>Add song from device</span>
+                              </t-butt>
+                              <t-butt @click=${() => this._chooseAddOption('online')}>
+                                <t-icon name="note-search"></t-icon>
+                                <span>Download songs online</span>
+                              </t-butt>
+                              <t-dropdown-button
+                                .open=${this.showGroupSortDropdown}
+                                @dropdown-toggled=${this._handleGroupSortDropdownToggled}
+                              >
+                                <t-butt icon slot="button" title="Sort options">
+                                  <t-icon name="sort"></t-icon> Sort
+                                </t-butt>
+                                <div slot="dropdown">${this._renderGroupSortDropdown()}</div>
+                              </t-dropdown-button>
+                            </div>
                           </t-header-actions>
                         `}
                   `
@@ -2142,239 +2309,272 @@ export class MediaParent extends LitElement {
       />
 
       <div class="songs-container">
-        ${isEmpty
+        ${this._onlineAddMode
           ? html`
-              <div class="empty-state">
-                <div class="empty-state-content">
-                  ${this.signedIn
-                    ? html`
-                        <div class="empty-state-user-avatar">
-                          ${this.userPhotoUrl
-                            ? html`<img src=${this.userPhotoUrl} alt="User avatar" />`
-                            : html`<t-icon name="user"></t-icon>`}
-                        </div>
-                        <h2 class="empty-state-user-name">
-                          Welcome to Troff, ${this.userName || 'friend'}!
-                        </h2>
-                      `
-                    : html`
-                        <t-icon name="note" class="empty-state-icon" large></t-icon>
-                        <h2 class="empty-state-title">Welcome to Troff!</h2>
-                      `}
-                  <p class="empty-state-subtitle">Get started by adding your first song</p>
-                  <div class="empty-state-actions">
-                    <t-butt class="empty-action-btn" href="#2582986745&demo.mp4">
-                      <t-icon name="note"></t-icon>
-                      <span>Download the demo song</span>
-                    </t-butt>
-                    <t-butt class="empty-action-btn" @click=${this._handleAddSong}>
-                      <t-icon name="note-plus"></t-icon>
-                      <span>Add songs from device</span>
-                    </t-butt>
-                    <t-butt class="empty-action-btn" href="/find.html" target="_blank">
-                      <t-icon name="note-search"></t-icon>
-                      <span>Find songs online</span>
-                    </t-butt>
-                    ${!this.signedIn
+              <div class="online-add-back">
+                <t-butt @click=${this._exitOnlineAddMode}>← Back to my songs</t-butt>
+                <span>Look online for new songs to add to ${onlineAddTargetLabel}</span>
+              </div>
+              <t-server-song-list
+                .songs=${filterServerSongs(
+                  getCachedServerSongList(),
+                  this.searchQuery,
+                  this.currentFilter as ServerSongTab
+                )}
+                .query=${this.searchQuery}
+                .tab=${this.currentFilter as ServerSongTab}
+                .loading=${this._serverSongsLoading}
+              ></t-server-song-list>
+            `
+          : ''}
+        <div class="local-songs-content ${this._onlineAddMode ? 'hidden-in-online-mode' : ''}">
+          ${isEmpty
+            ? html`
+                <div class="empty-state">
+                  <div class="empty-state-content">
+                    ${this.signedIn
                       ? html`
-                          <p class="empty-state-sign-in-note">
-                            Sign in to get the songs shared in your groups
-                          </p>
-                          ${this.authBusy
-                            ? html`<div class="empty-state-auth-busy">
-                                <t-loading></t-loading>
-                                <span>Signing in…</span>
-                              </div>`
-                            : html`<t-butt class="empty-action-btn" @click=${this._handleSignIn}>
-                                <t-icon name="login"></t-icon>
-                                <span style="padding-left: 4px;">Sign in</span>
-                              </t-butt>`}
+                          <div class="empty-state-user-avatar">
+                            ${this.userPhotoUrl
+                              ? html`<img src=${this.userPhotoUrl} alt="User avatar" />`
+                              : html`<t-icon name="user"></t-icon>`}
+                          </div>
+                          <h2 class="empty-state-user-name">
+                            Welcome to Troff, ${this.userName || 'friend'}!
+                          </h2>
                         `
-                      : ''}
+                      : html`
+                          <t-icon name="note" class="empty-state-icon" large></t-icon>
+                          <h2 class="empty-state-title">Welcome to Troff!</h2>
+                        `}
+                    <p class="empty-state-subtitle">Get started by adding your first song</p>
+                    <div class="empty-state-actions">
+                      <t-butt class="empty-action-btn" href="#2582986745&demo.mp4">
+                        <t-icon name="download-song"></t-icon>
+                        <span>Download the demo song</span>
+                      </t-butt>
+                      <t-butt class="empty-action-btn" @click=${this._handleAddSong}>
+                        <t-icon name="note-plus"></t-icon>
+                        <span>Add songs from device</span>
+                      </t-butt>
+                      ${!this.signedIn
+                        ? html`
+                            <p class="empty-state-sign-in-note">
+                              Sign in to get the songs shared in your groups
+                            </p>
+                            ${this.authBusy
+                              ? html`<div class="empty-state-auth-busy">
+                                  <t-loading></t-loading>
+                                  <span>Signing in…</span>
+                                </div>`
+                              : html`<t-butt class="empty-action-btn" @click=${this._handleSignIn}>
+                                  <t-icon name="login"></t-icon>
+                                  <span style="padding-left: 4px;">Sign in</span>
+                                </t-butt>`}
+                          `
+                        : ''}
+                    </div>
                   </div>
                 </div>
-              </div>
-            `
-          : html`
-              ${this.currentFilter === 'tracks'
-                ? query.trim() !== '' && visibleTracks.length === 0
-                  ? html`
-                      <div class="no-results">
-                        <div class="no-results-text">No tracks match "${query.trim()}".</div>
-                        <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                          Clear search
-                        </t-butt>
-                      </div>
-                    `
-                  : html`
-                      <t-track-list
-                        .tracks=${visibleTracks}
-                        .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
-                        .currentSongKey=${this.currentSongKey}
-                        .downloadProgressMap=${this._getDownloadProgressMap()}
-                        .uploadProgressMap=${this._getUploadProgressMap()}
-                      ></t-track-list>
-                      ${query.trim() !== ''
-                        ? html`
-                            <div class="no-results">
-                              <div class="no-results-text">
-                                showing ${visibleTracks.length} out of ${songs.length}
-                              </div>
-                              <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                                Show all
-                              </t-butt>
-                            </div>
-                          `
-                        : ''}
-                    `
-                : ''}
-              ${this.currentFilter === 'artists'
-                ? query.trim() !== '' && visibleArtists.length === 0
-                  ? html`
-                      <div class="no-results">
-                        <div class="no-results-text">No artists match "${query.trim()}".</div>
-                        <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                          Clear search
-                        </t-butt>
-                      </div>
-                    `
-                  : html`
-                      <t-artist-list
-                        .artists=${visibleArtists}
-                        .tracks=${songs}
-                        .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
-                        .currentSongKey=${this.currentSongKey}
-                        .downloadProgressMap=${this._getDownloadProgressMap()}
-                        .uploadProgressMap=${this._getUploadProgressMap()}
-                      >
-                        ${this._contextType === 'artist'
-                          ? html`<div slot="sort-controls">
-                              <t-dropdown-button
-                                class="header-sort-btn"
-                                .open=${this.showSortDropdown}
-                                @dropdown-toggled=${this._handleSortDropdownToggled}
-                              >
-                                <t-butt icon slot="button" title="Sort options">
-                                  <t-icon name="sort"></t-icon>
+              `
+            : html`
+                ${this.currentFilter === 'tracks'
+                  ? query.trim() !== '' && visibleTracks.length === 0
+                    ? html`
+                        <div class="no-results">
+                          <div class="no-results-text">No tracks match "${query.trim()}".</div>
+                          <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                            Clear search
+                          </t-butt>
+                        </div>
+                      `
+                    : html`
+                        <t-track-list
+                          .tracks=${visibleTracks}
+                          .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
+                          .currentSongKey=${this.currentSongKey}
+                          .downloadProgressMap=${this._getDownloadProgressMap()}
+                          .uploadProgressMap=${this._getUploadProgressMap()}
+                        ></t-track-list>
+                        ${query.trim() !== ''
+                          ? html`
+                              <div class="no-results">
+                                <div class="no-results-text">
+                                  showing ${visibleTracks.length} out of ${songs.length}
+                                </div>
+                                <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                                  Show all
                                 </t-butt>
-                                <div slot="dropdown">${this._renderSortDropdown()}</div>
-                              </t-dropdown-button>
-                            </div>`
-                          : ''}
-                      </t-artist-list>
-                      ${query.trim() !== ''
-                        ? html`
-                            <div class="no-results">
-                              <div class="no-results-text">
-                                showing ${visibleArtists.length} out of
-                                ${this._getUniqueArtists(songs).length}
                               </div>
-                              <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                                Show all
-                              </t-butt>
-                            </div>
-                          `
-                        : ''}
-                    `
-                : ''}
-              ${this.currentFilter === 'genre'
-                ? query.trim() !== '' && visibleGenres.length === 0
-                  ? html`
-                      <div class="no-results">
-                        <div class="no-results-text">No genres match "${query.trim()}".</div>
-                        <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                          Clear search
-                        </t-butt>
-                      </div>
-                    `
-                  : html`
-                      <t-genre-list
-                        .genres=${visibleGenres}
-                        .tracks=${songs}
-                        .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
-                        .currentSongKey=${this.currentSongKey}
-                        .downloadProgressMap=${this._getDownloadProgressMap()}
-                        .uploadProgressMap=${this._getUploadProgressMap()}
-                      >
-                        ${this._contextType === 'genre'
-                          ? html`<div slot="sort-controls">
-                              <t-dropdown-button
-                                class="header-sort-btn"
-                                .open=${this.showSortDropdown}
-                                @dropdown-toggled=${this._handleSortDropdownToggled}
-                              >
-                                <t-butt icon slot="button" title="Sort options">
-                                  <t-icon name="sort"></t-icon>
+                            `
+                          : ''}
+                      `
+                  : ''}
+                ${this.currentFilter === 'artists'
+                  ? query.trim() !== '' && visibleArtists.length === 0
+                    ? html`
+                        <div class="no-results">
+                          <div class="no-results-text">No artists match "${query.trim()}".</div>
+                          <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                            Clear search
+                          </t-butt>
+                        </div>
+                      `
+                    : html`
+                        <t-artist-list
+                          .artists=${visibleArtists}
+                          .tracks=${songs}
+                          .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
+                          .currentSongKey=${this.currentSongKey}
+                          .downloadProgressMap=${this._getDownloadProgressMap()}
+                          .uploadProgressMap=${this._getUploadProgressMap()}
+                          @add-online-requested=${() => this._chooseAddOption('online')}
+                        >
+                          ${this._contextType === 'artist'
+                            ? html`<div slot="sort-controls">
+                                <t-dropdown-button
+                                  class="header-sort-btn"
+                                  .open=${this.showSortDropdown}
+                                  @dropdown-toggled=${this._handleSortDropdownToggled}
+                                >
+                                  <t-butt icon slot="button" title="Sort options">
+                                    <t-icon name="sort"></t-icon> Sort
+                                  </t-butt>
+                                  <div slot="dropdown">${this._renderSortDropdown()}</div>
+                                </t-dropdown-button>
+                              </div>`
+                            : ''}
+                        </t-artist-list>
+                        ${query.trim() !== ''
+                          ? html`
+                              <div class="no-results">
+                                <div class="no-results-text">
+                                  showing ${visibleArtists.length} out of
+                                  ${this._getUniqueArtists(songs).length}
+                                </div>
+                                <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                                  Show all
                                 </t-butt>
-                                <div slot="dropdown">${this._renderSortDropdown()}</div>
-                              </t-dropdown-button>
-                            </div>`
-                          : ''}
-                      </t-genre-list>
-                      ${query.trim() !== ''
-                        ? html`
-                            <div class="no-results">
-                              <div class="no-results-text">
-                                showing ${visibleGenres.length} out of
-                                ${this._getUniqueGenres(songs).length}
                               </div>
-                              <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                                Show all
-                              </t-butt>
-                            </div>
-                          `
-                        : ''}
-                    `
-                : ''}
-              ${this.currentFilter === 'groups'
-                ? query.trim() !== '' && visibleGroups.length === 0
-                  ? html`
-                      <div class="no-results">
-                        <div class="no-results-text">No groups match "${query.trim()}".</div>
-                        <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                          Clear search
-                        </t-butt>
-                      </div>
-                    `
-                  : html`
-                      <t-group-list
-                        .groups=${visibleGroups}
-                        .tracks=${songs}
-                        .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
-                        .currentSongKey=${this.currentSongKey}
-                        .downloadProgressMap=${this._getDownloadProgressMap()}
-                        .uploadProgressMap=${this._getUploadProgressMap()}
-                      >
-                        ${this._currentGroupKey
-                          ? html`<div slot="sort-controls">
-                              <t-dropdown-button
-                                class="header-sort-btn"
-                                .open=${this.showSortDropdown}
-                                @dropdown-toggled=${this._handleSortDropdownToggled}
-                              >
-                                <t-butt icon slot="button" title="Sort options">
-                                  <t-icon name="sort"></t-icon>
+                            `
+                          : ''}
+                      `
+                  : ''}
+                ${this.currentFilter === 'genre'
+                  ? query.trim() !== '' && visibleGenres.length === 0
+                    ? html`
+                        <div class="no-results">
+                          <div class="no-results-text">No genres match "${query.trim()}".</div>
+                          <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                            Clear search
+                          </t-butt>
+                        </div>
+                      `
+                    : html`
+                        <t-genre-list
+                          .genres=${visibleGenres}
+                          .tracks=${songs}
+                          .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
+                          .currentSongKey=${this.currentSongKey}
+                          .downloadProgressMap=${this._getDownloadProgressMap()}
+                          .uploadProgressMap=${this._getUploadProgressMap()}
+                          @add-online-requested=${() => this._chooseAddOption('online')}
+                        >
+                          ${this._contextType === 'genre'
+                            ? html`<div slot="sort-controls">
+                                <t-dropdown-button
+                                  class="header-sort-btn"
+                                  .open=${this.showSortDropdown}
+                                  @dropdown-toggled=${this._handleSortDropdownToggled}
+                                >
+                                  <t-butt icon slot="button" title="Sort options">
+                                    <t-icon name="sort"></t-icon> Sort
+                                  </t-butt>
+                                  <div slot="dropdown">${this._renderSortDropdown()}</div>
+                                </t-dropdown-button>
+                              </div>`
+                            : ''}
+                        </t-genre-list>
+                        ${query.trim() !== ''
+                          ? html`
+                              <div class="no-results">
+                                <div class="no-results-text">
+                                  showing ${visibleGenres.length} out of
+                                  ${this._getUniqueGenres(songs).length}
+                                </div>
+                                <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                                  Show all
                                 </t-butt>
-                                <div slot="dropdown">${this._renderSortDropdown()}</div>
-                              </t-dropdown-button>
-                            </div>`
-                          : ''}
-                      </t-group-list>
-                      ${query.trim() !== ''
-                        ? html`
-                            <div class="no-results">
-                              <div class="no-results-text">
-                                showing ${visibleGroups.length} out of ${this.groups.length}
                               </div>
-                              <t-butt class="no-results-clear" @click=${this._clearSearch}>
-                                Show all
-                              </t-butt>
-                            </div>
-                          `
-                        : ''}
+                            `
+                          : ''}
+                      `
+                  : ''}
+                ${this.currentFilter === 'groups'
+                  ? query.trim() !== '' && visibleGroups.length === 0
+                    ? html`
+                        <div class="no-results">
+                          <div class="no-results-text">No groups match "${query.trim()}".</div>
+                          <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                            Clear search
+                          </t-butt>
+                        </div>
+                      `
+                    : html`
+                        <t-group-list
+                          .groups=${visibleGroups}
+                          .tracks=${songs}
+                          .highlightedIndex=${this.isSearchFocused ? this.highlightedIndex : -1}
+                          .currentSongKey=${this.currentSongKey}
+                          .downloadProgressMap=${this._getDownloadProgressMap()}
+                          .uploadProgressMap=${this._getUploadProgressMap()}
+                          @add-online-requested=${() => this._chooseAddOption('online')}
+                        >
+                          ${this._currentGroupKey
+                            ? html`<div slot="sort-controls">
+                                <t-dropdown-button
+                                  class="header-sort-btn"
+                                  .open=${this.showSortDropdown}
+                                  @dropdown-toggled=${this._handleSortDropdownToggled}
+                                >
+                                  <t-butt icon slot="button" title="Sort options">
+                                    <t-icon name="sort"></t-icon> Sort
+                                  </t-butt>
+                                  <div slot="dropdown">${this._renderSortDropdown()}</div>
+                                </t-dropdown-button>
+                              </div>`
+                            : ''}
+                        </t-group-list>
+                        ${query.trim() !== ''
+                          ? html`
+                              <div class="no-results">
+                                <div class="no-results-text">
+                                  showing ${visibleGroups.length} out of ${this.groups.length}
+                                </div>
+                                <t-butt class="no-results-clear" @click=${this._clearSearch}>
+                                  Show all
+                                </t-butt>
+                              </div>
+                            `
+                          : ''}
+                      `
+                  : ''}
+                ${hasActiveQuery
+                  ? html`
+                      <t-server-song-list
+                        .songs=${filterServerSongs(getCachedServerSongList(), query, serverTab)}
+                        .query=${query}
+                        .tab=${serverTab}
+                        .loading=${this._serverSongsLoading}
+                      ></t-server-song-list>
+                      <t-butt ghost class="add-song-from-device-row" @click=${this._handleAddSong}>
+                        <t-icon name="note-plus"></t-icon>
+                        <span>Not finding it? Add song from device</span>
+                      </t-butt>
                     `
-                : ''}
-            `}
+                  : ''}
+              `}
+        </div>
       </div>
 
       <t-media-footer

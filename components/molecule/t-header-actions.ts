@@ -6,10 +6,10 @@ import '../atom/t-input.js';
 import '../atom/t-dropdown-button.js';
 
 /**
- * Reusable action buttons for headers: add, sort, find, search, edit.
+ * Reusable action buttons for headers: add, sort, search, edit.
  *
  * Parent manages all state and event handlers.
- * The `isSearchFocused` prop drives CSS classes for mobile collapse.
+ * The `isSearchFocused` prop (or non-empty searchValue) drives CSS classes for mobile collapse/expansion.
  *
  * @slot sort – Place a `t-dropdown-button` here for sort controls.
  */
@@ -38,7 +38,7 @@ export class HeaderActions extends LitElement {
     }
 
     .header-actions.search-expanded {
-      max-width: 120px;
+      max-width: 180px;
     }
 
     .header-actions.search-expanded {
@@ -58,7 +58,7 @@ export class HeaderActions extends LitElement {
 
     .search-compact-wrap.search-expanded {
       transition: width 0.3s ease;
-      width: 120px;
+      width: 180px;
       flex-shrink: 1;
     }
 
@@ -113,6 +113,10 @@ export class HeaderActions extends LitElement {
       display: none;
     }
 
+    .header-actions.search-expanded > .header-more-dropdown {
+      display: none;
+    }
+
     /* Desktop: search always expanded, buttons always visible */
     @media (min-width: 576px) {
       .header-actions:not(.search-expanded),
@@ -155,6 +159,15 @@ export class HeaderActions extends LitElement {
       .header-actions.search-expanded > slot[name='sort'] {
         display: contents;
       }
+
+      .header-actions.search-expanded > .header-more-dropdown {
+        display: contents;
+      }
+    }
+
+    /* More menu container (the dropdown content area) */
+    .more-menu {
+      min-width: 200px;
     }
   `;
 
@@ -163,9 +176,6 @@ export class HeaderActions extends LitElement {
 
   /** Title/tooltip for the add button. */
   @property({ type: String }) addTitle = 'Add';
-
-  /** Show the "find songs" button. */
-  @property({ type: Boolean }) showFind = false;
 
   /** Show the edit button. */
   @property({ type: Boolean }) showEdit = false;
@@ -185,51 +195,13 @@ export class HeaderActions extends LitElement {
   @property({ type: Boolean }) narrow = false;
 
   render() {
-    const cls =
-      `${this.isSearchFocused ? 'search-expanded' : ''} ${this.narrow ? 'narrow' : ''}`.trim();
+    const hasSearchValue = !!(this.searchValue && this.searchValue.trim());
+    const isExpanded = this.isSearchFocused || hasSearchValue;
+    const cls = `${isExpanded ? 'search-expanded' : ''} ${this.narrow ? 'narrow' : ''}`.trim();
 
     return html`
       <div class="header-actions ${cls}">
-        <!-- Add button -->
-        ${this.addIcon
-          ? html`
-              <t-butt
-                class="action-btn ${cls}"
-                icon
-                @click=${() =>
-                  this.dispatchEvent(
-                    new CustomEvent('add-click', { bubbles: true, composed: true })
-                  )}
-                title=${this.addTitle}
-              >
-                <t-icon name=${this.addIcon}></t-icon>
-              </t-butt>
-            `
-          : ''}
-
-        <!-- Sort (slot) -->
-        <slot name="sort"></slot>
-
-        <!-- Find button -->
-        ${this.showFind
-          ? html`
-              <t-butt
-                class="action-btn ${cls}"
-                icon
-                href="/find.html"
-                target="_blank"
-                @click=${() =>
-                  this.dispatchEvent(
-                    new CustomEvent('find-click', { bubbles: true, composed: true })
-                  )}
-                title="Find new songs!"
-              >
-                <t-icon name="note-search"></t-icon>
-              </t-butt>
-            `
-          : ''}
-
-        <!-- Search input -->
+        <!-- Search input (kept visible and functional) -->
         <div class="search-compact-wrap ${cls}">
           <t-icon class="search-compact-icon" name="search" aria-hidden="true"></t-icon>
           <t-input
@@ -266,22 +238,27 @@ export class HeaderActions extends LitElement {
           ></t-input>
         </div>
 
-        <!-- Edit button -->
-        ${this.showEdit
-          ? html`
-              <t-butt
-                class="action-btn ${cls}"
-                icon
-                @click=${() =>
-                  this.dispatchEvent(
-                    new CustomEvent('edit-click', { bubbles: true, composed: true })
-                  )}
-                title=${this.editTitle}
-              >
-                <t-icon name="edit"></t-icon>
-              </t-butt>
-            `
-          : ''}
+        <!-- All other header buttons (add, sort, edit, add-from-online etc) are now in ONE combined dropdown -->
+        <t-dropdown-button class="header-more-dropdown">
+          <t-butt icon slot="button" title="More actions">
+            <t-icon name="more-vertical"></t-icon>
+          </t-butt>
+          <div
+            slot="dropdown"
+            class="more-menu"
+            @click=${(e: Event) => {
+              const target = e.target as HTMLElement;
+              const clickedButt = target.closest('t-butt');
+              // Only auto-close for the direct menu items (add/online), not when clicking inside nested sort dropdown's trigger
+              if (clickedButt && !clickedButt.closest('t-dropdown-button t-butt')) {
+                const dd = (e.currentTarget as HTMLElement).closest('t-dropdown-button') as any;
+                if (dd) dd.open = false;
+              }
+            }}
+          >
+            <slot name="more"></slot>
+          </div>
+        </t-dropdown-button>
       </div>
     `;
   }
