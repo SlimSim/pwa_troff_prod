@@ -129,13 +129,6 @@ export class GroupList extends LitElement {
       bottom: 0;
       display: flex;
       align-items: center;
-      opacity: 0.5;
-      transition: opacity 0.15s;
-    }
-
-    .track-remove-overlay:hover,
-    .track-add-overlay:hover {
-      opacity: 1;
     }
 
     /* Add songs section */
@@ -529,6 +522,7 @@ export class GroupList extends LitElement {
               <div class="track-remove-overlay">
                 <t-butt
                   icon
+                  ghost
                   confirm
                   confirmText="Remove?"
                   @click=${() => this._handleRemoveSong(track.songKey)}
@@ -819,12 +813,7 @@ export class GroupList extends LitElement {
                 ${!this._songManagementOpen
                   ? html`
                       <div class="more-content">
-                        <t-butt
-                          @click=${() =>
-                            this.dispatchEvent(
-                              new CustomEvent('add-click', { bubbles: true, composed: true })
-                            )}
-                        >
+                        <t-butt @click=${() => this._handleAddSongToGroup()}>
                           <t-icon name="note-plus"></t-icon>
                           <span>Add song from device</span>
                         </t-butt>
@@ -925,6 +914,7 @@ export class GroupList extends LitElement {
                                 <div class="track-add-overlay">
                                   <t-butt
                                     icon
+                                    ghost
                                     title="Add to group"
                                     @click=${(e: Event) => {
                                       e.stopPropagation();
