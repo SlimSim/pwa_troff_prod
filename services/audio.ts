@@ -1,3 +1,6 @@
+import { isAudioGraphEnabled } from '../utils/debug-flags.js';
+import { isIOSFamily } from '../utils/browserEnv.js';
+
 const audio = new Audio();
 
 export { audio };
@@ -22,33 +25,12 @@ function detectElementVolumeWorks(): boolean {
 }
 
 /**
- * iOS-family UA check: the read-back probe sticks on newer iOS while changing
- * nothing audible, so the probe alone cannot detect broken element volume.
+ * The Web Audio volume graph is never built on iOS-family browsers: it causes
+ * audible playback skipping there, and element volume is a no-op anyway.
+ * Evaluated at call time so debug flags and UA stay in sync.
  */
-function isIOSFamily(): boolean {
-  try {
-    const scope = globalThis as unknown as {
-      navigator?: { userAgent?: unknown; maxTouchPoints?: unknown };
-    };
-    const nav = scope.navigator;
-    if (!nav || typeof nav.userAgent !== 'string') {
-      return false;
-    }
-    const ua = nav.userAgent;
-    if (/iPhone|iPad|iPod/.test(ua)) {
-      return true;
-    }
-    if (
-      /Macintosh/.test(ua) &&
-      typeof nav.maxTouchPoints === 'number' &&
-      nav.maxTouchPoints > 1
-    ) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
+export function isVolumeGraphAllowed(): boolean {
+  return isAudioGraphEnabled() && !isIOSFamily();
 }
 
 export const elementVolumeWorks = detectElementVolumeWorks() && !isIOSFamily();
@@ -62,6 +44,9 @@ export function volumePercentToElementVolume(percent: number): number {
 }
 
 export function volumePercentToGain(percent: number): number {
+  if (!isVolumeGraphAllowed()) {
+    return 1;
+  }
   const n = Number(percent);
   if (!Number.isFinite(n)) {
     return 1;
@@ -90,6 +75,50 @@ export interface VolumeTargets {
 let boostContext: AudioContext | null = null;
 let boostGainNode: GainNode | null = null;
 let boostSourceCreated = false;
+let lastVolumePercent = 100;
+
+export interface AudioDebugState {
+  elementVolumeWorks: boolean;
+  audioGraphEnabled: boolean;
+  audioGraphCreated: boolean;
+  audioContextState: 'none' | 'running' | 'suspended' | 'closed' | 'interrupted';
+  audioContextSampleRate: number;
+  volumePercent: number;
+  gainValue: number;
+}
+
+/** Numeric-only snapshot of the live volume/graph state for silent diagnostics. */
+export function getAudioDebugState(): AudioDebugState {
+  const graphEnabled = isAudioGraphEnabled();
+  let audioContextState: AudioDebugState['audioContextState'] = 'none';
+  let audioContextSampleRate = 0;
+  try {
+    const state: string | undefined = boostContext?.state;
+    if (
+      state === 'running' ||
+      state === 'suspended' ||
+      state === 'closed' ||
+      state === 'interrupted'
+    ) {
+      audioContextState = state;
+    }
+    const sampleRate = Number(boostContext?.sampleRate);
+    if (Number.isFinite(sampleRate)) {
+      audioContextSampleRate = sampleRate;
+    }
+  } catch {
+    /* diagnostics must never throw */
+  }
+  return {
+    elementVolumeWorks,
+    audioGraphEnabled: graphEnabled,
+    audioGraphCreated: boostSourceCreated,
+    audioContextState,
+    audioContextSampleRate,
+    volumePercent: lastVolumePercent,
+    gainValue: isVolumeGraphAllowed() ? volumePercentToGain(lastVolumePercent) : 1,
+  };
+}
 
 /**
  * When element volume is broken (iOS), the GainNode is the ONLY way to change
@@ -125,6 +154,9 @@ function attachResumeHooks(context: AudioContext): void {
 }
 
 function getBoostGain(): GainNode | null {
+  if (!isVolumeGraphAllowed()) {
+    return null;
+  }
   try {
     if (boostGainNode) {
       return boostGainNode;
@@ -170,11 +202,18 @@ function getBoostGain(): GainNode | null {
 
 export function setVolumePercent(percent: number, targets?: VolumeTargets): void {
   try {
+    const graphAllowed = isVolumeGraphAllowed();
+    const numericPercent = Number(percent);
+    if (Number.isFinite(numericPercent)) {
+      lastVolumePercent = numericPercent;
+    }
     /* Broken mode: pin element to unity — WebKit plumbs element.volume into
        MediaElementAudioSource input, so the gain node is the single source
-       of truth (avoids double-attenuation). */
-    const elementVolume = elementVolumeWorks ? volumePercentToElementVolume(percent) : 1;
-    const gainValue = volumePercentToGain(percent);
+       of truth (avoids double-attenuation). With the debug kill switch the
+       graph is disabled, so fall back to plain v1 element volume. */
+    const elementVolume =
+      graphAllowed && !elementVolumeWorks ? 1 : volumePercentToElementVolume(percent);
+    const gainValue = graphAllowed ? volumePercentToGain(percent) : 1;
     if (targets !== undefined && targets !== null && typeof targets === 'object') {
       const maybe = targets as Partial<VolumeTargets>;
       try {
@@ -208,7 +247,7 @@ export function setVolumePercent(percent: number, targets?: VolumeTargets): void
     } catch {
       /* ignore gain update failure */
     }
-    if (gainValue > 1 || !elementVolumeWorks) {
+    if (graphAllowed && (gainValue > 1 || !elementVolumeWorks)) {
       try {
         const liveGain = getBoostGain();
         if (liveGain) {
